@@ -1,0 +1,25 @@
+{
+  "name": "floe-runtime",
+  "version": "0.1.0",
+  "description": "Shared subprocess/JSON-RPC runtime for driving AI coding-agent CLIs (Codex, Copilot) with a common start/run/interrupt/quiesce/retire lifecycle.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./adapters/codex": "./src/adapters/codex.mjs",
+    "./adapters/copilot": "./src/adapters/copilot.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "smoke": "node --test --test-concurrency=1 test-smoke/*.smoke.test.mjs"
+  }
+}

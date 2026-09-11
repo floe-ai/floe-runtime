@@ -215,6 +215,27 @@ test('run() emits normalized started/completed activity events for a tool_call',
   }
 });
 
+test('run() emits a plan event for each plan session/update, entries passed through unmerged', async () => {
+  const runtime = makeRuntime();
+  const plans = [];
+  runtime.on('plan', event => plans.push(event));
+  try {
+    const result = await runtime.run('worker', { prompt: '[plan] do something', schema: SCHEMA }, '/tmp/work');
+    assert.equal(plans.length, 2);
+    assert.deepEqual(plans[0].entries.map(e => e.status), ['in_progress', 'pending']);
+    // The second update is a COMPLETE replacement, not a merge - it must stand on its own, not
+    // accumulate with the first (per agent-plan.md's full-replace semantics).
+    assert.deepEqual(plans[1].entries.map(e => e.status), ['completed', 'in_progress']);
+    for (const event of plans) {
+      assert.equal(event.runtime, 'copilot');
+      assert.equal(event.sessionId, result.sessionId);
+      assert.equal(event.turnId, result.turnId);
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
 test('run() does not emit an activity event when there is no tool call', async () => {
   const runtime = makeRuntime();
   const activity = [];

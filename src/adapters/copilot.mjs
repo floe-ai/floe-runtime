@@ -152,6 +152,13 @@ export class CopilotRuntime extends Runtime {
       this.#trackToolCall(params.sessionId, activityMap, turnId, update);
       const outputDelta = Array.isArray(update.content) ? update.content.map(part => part.content?.text || part.text || '').join('') : '';
       if (outputDelta) this.publish(params.sessionId, 'stream', { runtime: 'copilot', sessionId: params.sessionId, turnId, kind: 'commandOutput', delta: outputDelta, raw: message });
+    } else if (update.sessionUpdate === 'plan') {
+      // `protocol/v1/agent-plan.md`: "The Agent MUST send a complete list of all plan entries in each
+      // update and their current status. The Client MUST replace the current plan completely." Every
+      // update IS the whole plan, never a diff - so this just passes `entries` straight through
+      // unmerged; a consumer that keeps its own plan state must overwrite it wholesale on each event,
+      // never append/patch.
+      this.publish(params.sessionId, 'plan', { runtime: 'copilot', sessionId: params.sessionId, turnId, entries: update.entries || [], raw: message });
     } else if (update.sessionUpdate === 'usage_update') {
       // P7 fix: the structured usage_update notification is the PRIMARY source for usage() - see usage()
       // below - not the /usage text reply, which is only a best-effort fallback for when no structured

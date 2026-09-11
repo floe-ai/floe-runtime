@@ -143,6 +143,10 @@ function startPromptWork(sessionId, promptText) {
     pendingPrompts.set(sessionId, { id: pending.id, timer });
     return;
   }
+  if (promptText.includes('[plan]')) {
+    notify('session/update', { sessionId, update: { sessionUpdate: 'plan', entries: [{ content: 'Step one', priority: 'high', status: 'in_progress' }, { content: 'Step two', priority: 'medium', status: 'pending' }] } });
+    notify('session/update', { sessionId, update: { sessionUpdate: 'plan', entries: [{ content: 'Step one', priority: 'high', status: 'completed' }, { content: 'Step two', priority: 'medium', status: 'in_progress' }] } });
+  }
   if (promptText.includes('[tool-call]')) {
     notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call', toolCallId: 'call_1', title: 'Running fixture command', kind: 'execute', status: 'pending', rawInput: { command: 'echo fixture' } } });
     notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'completed', content: [{ text: 'command output' }] } });

@@ -28,6 +28,13 @@
 // real `copilot --acp` server treats them (see src/adapters/copilot.mjs).
 import readline from 'node:readline';
 
+// Mirrors copilot.mjs's own MODE_URIS - real Copilot's 'mode' config option values are these same URIs.
+const MODE_URIS = Object.freeze({
+  interactive: 'https://agentclientprotocol.com/protocol/session-modes#agent',
+  plan: 'https://agentclientprotocol.com/protocol/session-modes#plan',
+  autopilot: 'https://agentclientprotocol.com/protocol/session-modes#autopilot',
+});
+
 let serial = 0;
 const sessions = new Map(); // sessionId -> { cwd, currentModelId, updatedAt }
 const pendingPrompts = new Map(); // sessionId -> { id, timer }
@@ -197,9 +204,20 @@ lines.on('line', line => {
     if (message.method === 'session/new') {
       const sessionId = 'sess_' + (++serial);
       sessions.set(sessionId, { cwd: params.cwd, currentModelId: 'fixture-model', updatedAt: new Date().toISOString() });
-      // The real session/new result wraps models in an object, not a bare array (B1 fix).
+      // The real session/new result wraps models in an object, not a bare array (B1 fix). Real Copilot
+      // also advertises a 'mode' Session Config Option (protocol/v1/session-config-options.md) whose
+      // option values are the same mode URIs session/set_mode takes - `[no-config-options]` in cwd
+      // simulates an agent that offers only the legacy method, for the fallback-path test.
+      const configOptions = params.cwd?.includes('[no-config-options]') ? [] : [{
+        id: 'mode', category: 'mode', currentValue: MODE_URIS.interactive,
+        options: [
+          { name: 'Agent', value: MODE_URIS.interactive },
+          { name: 'Plan', value: MODE_URIS.plan },
+          { name: 'Autopilot', value: MODE_URIS.autopilot },
+        ],
+      }];
       reply(message.id, {
-        sessionId,
+        sessionId, configOptions,
         models: { availableModels: [{ modelId: 'fixture-model', name: 'Fixture model' }, { modelId: 'fixture-model-2', name: 'Fixture model 2' }], currentModelId: 'fixture-model' },
       });
       notify('session/update', { sessionId, update: { sessionUpdate: 'available_commands_update', availableCommands: AVAILABLE_COMMANDS } });
@@ -212,6 +230,7 @@ lines.on('line', line => {
       return reply(message.id, {});
     }
     if (message.method === 'session/set_mode') return reply(message.id, {});
+    if (message.method === 'session/set_config_option') return reply(message.id, {});
     if (message.method === 'session/fork') return reply(message.id, { sessionId: 'sess_fork_' + (++serial) });
     if (message.method === 'session/list') return reply(message.id, { data: [...sessions.entries()].map(([sessionId, session]) => ({ sessionId, updatedAt: session.updatedAt })) });
     if (message.method === 'session/load') {

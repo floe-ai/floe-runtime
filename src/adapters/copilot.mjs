@@ -363,11 +363,26 @@ export class CopilotRuntime extends Runtime {
     if (session) session.currentModelId = modelId;
   }
 
-  /** P3: switches the session's ACP mode (interactive/plan/autopilot) via session/set_mode. */
+  /**
+   * P3 (R4 fix): switches the session's ACP mode (interactive/plan/autopilot). Prefers a Session Config
+   * Option when session/new advertised one for 'mode' - protocol/v1/session-config-options.md: "Session
+   * Config Options are the preferred way to expose session-level configuration", and its own note that
+   * "Dedicated session mode methods will be removed in a future version of the protocol" (the legacy
+   * session/set_mode this used to call unconditionally). Confirmed live (F10a): Copilot only reacts to
+   * session/set_config_option for its 'mode' option - session/set_mode was never observed to do
+   * anything against the real agent. Falls back to the legacy call for an agent that never advertised a
+   * 'mode' config option, so this stays correct for a backend that genuinely only speaks the old method.
+   */
   async setMode(sessionId, mode) {
     await this.start();
     const modeId = MODE_URIS[mode];
     check(modeId, 'invalid_mode', `Unknown session mode '${mode}'.`, 400);
+    const modeOption = this.sessions.get(sessionId)?.result?.configOptions?.find(option => option.id === 'mode');
+    if (modeOption) {
+      check(modeOption.options?.some(option => option.value === modeId), 'invalid_mode', `The agent's 'mode' config option does not offer '${mode}'.`, 400);
+      await this.request('session/set_config_option', { sessionId, configId: 'mode', value: modeId });
+      return;
+    }
     await this.request('session/set_mode', { sessionId, modeId });
   }
 

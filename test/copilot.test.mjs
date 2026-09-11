@@ -356,13 +356,29 @@ test('retire() calls session/close and reports deleted when the agent advertises
   }
 });
 
-// -- P3: session modes --------------------------------------------------------
+// -- R4: session modes prefer Session Config Options over the legacy method -------------------------
 
-test('setMode() sends session/set_mode with the ACP mode URI', async () => {
+test('setMode() prefers session/set_config_option when the agent advertises a "mode" config option', async () => {
   const runtime = makeRuntime();
   try {
     const first = await runtime.run('worker', { prompt: 'do something', schema: SCHEMA }, '/tmp/work');
     await runtime.setMode(first.sessionId, 'plan');
+    const counters = await runtime.request('debug/counters', {});
+    assert.equal(counters.requestCounts['session/set_config_option'], 1);
+    assert.equal(counters.requestCounts['session/set_mode'], undefined);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('setMode() falls back to the legacy session/set_mode when the agent advertises no "mode" config option', async () => {
+  const runtime = makeRuntime();
+  try {
+    const first = await runtime.run('worker', { prompt: 'do something', schema: SCHEMA }, '/tmp/work[no-config-options]');
+    await runtime.setMode(first.sessionId, 'plan');
+    const counters = await runtime.request('debug/counters', {});
+    assert.equal(counters.requestCounts['session/set_mode'], 1);
+    assert.equal(counters.requestCounts['session/set_config_option'], undefined);
   } finally {
     await runtime.close();
   }

@@ -57,6 +57,35 @@ test('Copilot smoke: session/close succeeds (B2 guard)', { skip }, async () => {
   }
 });
 
+test('Copilot smoke: a real reply with a prose preamble reproduces the O3 regression AND proves extractStructuredOutput() recovers it (real binary, Star-Map-shaped prompt)', { skip }, async () => {
+  const runtime = makeCopilotRuntime();
+  try {
+    const schema = { type: 'object', properties: { status: { type: 'string', enum: ['ok', 'error'] } }, required: ['status'], additionalProperties: false };
+    const result = await runtime.run(
+      'worker',
+      {
+        prompt: 'First, in one short sentence, say what you are about to do. Then, on a new line, reply with '
+          + 'exactly this JSON object matching this schema (a fenced ```json block is fine): '
+          + `${JSON.stringify(schema)}. The value must be {"status":"ok"}.`,
+        schema,
+      },
+      process.cwd(),
+      () => {},
+      { model: CHEAP_COPILOT_MODEL, timeoutMs: 60000 },
+    );
+    // Reproduces the regression: this is the ACTUAL failure star-map hit in production ("did not return
+    // valid JSON") - a real Copilot reply that opens with prose breaks a naive whole-string JSON.parse.
+    assert.throws(() => JSON.parse(result.text.trim()), 'a real Copilot reply with a prose preamble must still break a naive whole-string JSON.parse - this reproduces the regression');
+    // Proves the fix: extractStructuredOutput() (used internally by run() to produce result.report)
+    // recovers the very same real reply that just broke the naive parse above.
+    assert.deepEqual(result.report, { status: 'ok' });
+    await runtime.quiesce(result.sessionId);
+    await runtime.retire(result.sessionId);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test('Copilot smoke: a session survives a real subprocess SIGKILL and resumes with full context (the most important guard)', { skip }, async () => {
   const first = makeCopilotRuntime();
   let sessionId;

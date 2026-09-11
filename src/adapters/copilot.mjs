@@ -50,6 +50,31 @@ function looksLikeUsageLimit(text) {
   return typeof text === 'string' && USAGE_LIMIT_PHRASES.test(text);
 }
 
+// ACP's StopReason (https://agentclientprotocol.com/protocol/v1/prompt-turn#stop-reasons; exact enum +
+// descriptions confirmed in the released schema.json's "StopReason" $def) defines EXACTLY 5 values:
+//   end_turn          - "The turn ended successfully."
+//   max_tokens        - "The turn ended because the agent reached the maximum number of tokens."
+//   max_turn_requests - "...reached the maximum number of allowed agent requests between user turns."
+//   refusal           - "...the agent refused to continue. The user prompt and everything that comes
+//                        after it won't be included in the next prompt..."
+//   cancelled         - "...cancelled by the client via `session/cancel`."
+// `end_turn` is the ONLY one that means the model actually finished producing its message - `max_tokens`
+// and `max_turn_requests` mean the agent's own final message was cut off mid-stream (possibly mid-JSON).
+// Also confirmed in schema.json: PromptResponse (the session/prompt result) carries ONLY `stopReason` (+
+// `_meta`) - there is no separate "was this message complete" flag and no structured-result channel at
+// all, so this stopReason check is the ONLY signal the protocol gives us for gating extraction.
+// A structured report must NEVER be extracted from a message that wasn't confirmed complete: a truncated
+// JSON object whose braces happen to still balance would otherwise PARSE successfully and be silently
+// accepted as a real report - worse than a loud failure, since nothing would ever surface the truncation.
+// `cancelled` and `refusal` are handled separately above this map (they are not "incomplete", they are
+// different outcomes entirely). Any stop reason NOT in this known set (e.g. one a future protocol version
+// adds) is treated the same as a known-incomplete reason - fail closed, never assume a stop reason we
+// don't recognise is safe to parse.
+const INCOMPLETE_STOP_REASONS = {
+  max_tokens: 'ran out of tokens before finishing its report',
+  max_turn_requests: 'exceeded its per-turn model-request limit before finishing its report',
+};
+
 export class CopilotRuntime extends Runtime {
   constructor({ executable = 'copilot', args = [], model, timeoutMs = 45 * 60 * 1000, permissionPolicy, defaultPermissionDecision, unhandledRequestTimeoutMs } = {}) {
     super({ command: executable, args: [...args, '--acp'], env: process.env, unavailableCode: 'copilot_unavailable', permissionPolicy, defaultPermissionDecision, unhandledRequestTimeoutMs });
@@ -107,6 +132,13 @@ export class CopilotRuntime extends Runtime {
     if (!task && !session) return;
     const turnId = task?.turnId ?? null;
     if (task) task.lastActivity = Date.now();
+    // Only 'agent_message_chunk' ("A chunk of the agent's response being streamed" - schema.json's
+    // SessionUpdate $def) feeds the accumulated report text. 'agent_thought_chunk' ("A chunk of the
+    // agent's internal reasoning being streamed" - same $def, a DIFFERENT sessionUpdate variant) is
+    // deliberately not handled below at all, so the model's internal reasoning can never contaminate the
+    // report channel - see test/copilot.test.mjs's thought-chunk-isolation test. `messageId` resets on
+    // change per schema.json's ContentChunk $def: "A change in messageId indicates a new message has
+    // started" - so only the LAST message's text is kept as the report, matching that semantics exactly.
     if (update.sessionUpdate === 'agent_message_chunk') {
       const delta = update.content?.text || '';
       if (task) {
@@ -473,7 +505,7 @@ export class CopilotRuntime extends Runtime {
     this.turns.delete(sessionId);
     clearTimeout(task.timer);
     if (stopReason === 'cancelled') {
-      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'interrupted' });
+      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'interrupted', stopReason });
       task.reject(new RuntimeFault('interrupted', 'Turn was cancelled.', 409));
       return;
     }
@@ -491,16 +523,29 @@ export class CopilotRuntime extends Runtime {
         task.reject(new RuntimeFault('usage_limit_exceeded', reason, 402));
         return;
       }
-      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'failed' });
+      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'failed', stopReason });
       task.reject(new RuntimeFault('turn_failed', 'The agent refused to continue.', 409));
       return;
     }
     try {
-      const report = task.schema ? extractStructuredOutput(task.text, task.schema, { role: task.role }) : task.text;
-      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'completed' });
+      let report;
+      if (task.schema) {
+        // Only `end_turn` confirms the agent's final message is actually complete (see
+        // INCOMPLETE_STOP_REASONS above) - extraction must never run against a message the protocol
+        // itself told us was cut off, or one stopped for a reason this adapter doesn't recognise.
+        if (stopReason !== 'end_turn') {
+          const detail = INCOMPLETE_STOP_REASONS[stopReason]
+            || `stopped for a stop reason this adapter does not recognise (stopReason: ${stopReason}) - its message cannot be confirmed complete`;
+          throw new RuntimeFault('report_incomplete', `The ${task.role} ${detail} (stopReason: ${stopReason}). This is not malformed output - the agent was cut off before it could finish; do not treat this as an invalid report.`, 502);
+        }
+        report = extractStructuredOutput(task.text, task.schema, { role: task.role });
+      } else {
+        report = task.text;
+      }
+      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'completed', stopReason });
       task.resolve({ report, text: task.text, sessionId, turnId: task.turnId, stopReason, items: task.items, usage: task.usage, elapsedMs: Date.now() - task.started });
     } catch (error) {
-      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'failed' });
+      this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'failed', stopReason });
       task.reject(error);
     }
   }

@@ -10,6 +10,19 @@
 //   [refusal]      completes with stopReason 'refusal' and a generic refusal message
 //   [refusal-quota] like [refusal], but the message contains quota/spend-cap language, exercising the
 //                  F9 Copilot heuristic (UNCONFIRMED against the real backend - see copilot.mjs)
+//   [max-tokens]          completes with stopReason 'max_tokens' after a genuinely truncated (mid-object)
+//                        agent_message_chunk - the ACP spec's own signal that the message was cut off
+//   [max-tokens-balanced] like [max-tokens], but the truncated text happens to be a COMPLETE, schema-
+//                        valid JSON object - proves completeness is gated on stopReason, not on whether
+//                        the text merely looks parseable
+//   [max-turn-requests]  completes with stopReason 'max_turn_requests' (the other ACP "incomplete" reason)
+//   [unknown-stop]       completes with a stopReason NOT in ACP's known set, simulating a future protocol
+//                        version - must fail closed exactly like a known-incomplete reason
+//   [two-messages]       emits two agent_message_chunk updates with DIFFERENT messageIds before end_turn,
+//                        pinning that only the LAST message's text is kept as the report (ACP semantics:
+//                        a changed messageId starts a new message)
+//   [thought]            emits an agent_thought_chunk with JSON-shaped decoy text before the real report,
+//                        pinning that thought chunks never contaminate the accumulated report text
 // Also understands the real control-command slash-commands (/usage, /compact,
 // /autopilot, /permissions, /allow-all) as plain prompt text, matching how the
 // real `copilot --acp` server treats them (see src/adapters/copilot.mjs).
@@ -65,7 +78,58 @@ function finishPrompt(sessionId, promptText, stopReason = 'end_turn') {
   reply(pending.id, { stopReason });
 }
 
+/** Emits one or more agent_message_chunk/agent_thought_chunk updates (each its own
+ * {messageId, text, kind}) then replies with `stopReason` - used by the completeness-gating fixtures
+ * below, which need to control the EXACT text and stop reason together rather than deriving text from
+ * reportText(promptText). */
+function finishPromptWith(sessionId, stopReason, chunks) {
+  const pending = pendingPrompts.get(sessionId);
+  if (!pending) return;
+  pendingPrompts.delete(sessionId);
+  if (pending.timer) clearTimeout(pending.timer);
+  for (const { messageId, text, kind = 'agent_message_chunk' } of chunks) {
+    notify('session/update', { sessionId, update: { sessionUpdate: kind, messageId, content: { type: 'text', text } } });
+  }
+  reply(pending.id, { stopReason });
+}
+
 function startPromptWork(sessionId, promptText) {
+  if (promptText.includes('[max-tokens-balanced]')) {
+    const timer = setTimeout(() => finishPromptWith(sessionId, 'max_tokens', [{ messageId: 'msg_1', text: '{"ok":true,"summary":"looks complete but was truncated"}' }]), 5);
+    pendingPrompts.set(sessionId, { id: pendingPrompts.get(sessionId).id, timer });
+    return;
+  }
+  if (promptText.includes('[max-tokens]')) {
+    const timer = setTimeout(() => finishPromptWith(sessionId, 'max_tokens', [{ messageId: 'msg_1', text: '{"ok": true, "sum' }]), 5);
+    pendingPrompts.set(sessionId, { id: pendingPrompts.get(sessionId).id, timer });
+    return;
+  }
+  if (promptText.includes('[max-turn-requests]')) {
+    const timer = setTimeout(() => finishPromptWith(sessionId, 'max_turn_requests', [{ messageId: 'msg_1', text: '{"ok": true' }]), 5);
+    pendingPrompts.set(sessionId, { id: pendingPrompts.get(sessionId).id, timer });
+    return;
+  }
+  if (promptText.includes('[unknown-stop]')) {
+    const timer = setTimeout(() => finishPromptWith(sessionId, 'model_handoff', [{ messageId: 'msg_1', text: '{"ok": true}' }]), 5);
+    pendingPrompts.set(sessionId, { id: pendingPrompts.get(sessionId).id, timer });
+    return;
+  }
+  if (promptText.includes('[two-messages]')) {
+    const timer = setTimeout(() => finishPromptWith(sessionId, 'end_turn', [
+      { messageId: 'msg_1', text: '{"ok": true, "summary": "this is the WRONG, superseded message"}' },
+      { messageId: 'msg_2', text: JSON.stringify({ ok: true, summary: 'Fixture output' }) },
+    ]), 5);
+    pendingPrompts.set(sessionId, { id: pendingPrompts.get(sessionId).id, timer });
+    return;
+  }
+  if (promptText.includes('[thought]')) {
+    const timer = setTimeout(() => finishPromptWith(sessionId, 'end_turn', [
+      { messageId: 'thought_1', text: JSON.stringify({ ok: true, summary: 'this is a THOUGHT, not the report' }), kind: 'agent_thought_chunk' },
+      { messageId: 'msg_1', text: JSON.stringify({ ok: true, summary: 'Fixture output' }) },
+    ]), 5);
+    pendingPrompts.set(sessionId, { id: pendingPrompts.get(sessionId).id, timer });
+    return;
+  }
   if (promptText.includes('[refusal')) {
     const message = promptText.includes('[refusal-quota]')
       ? 'I cannot continue: you have hit your usage limit / spend cap for this billing period.'

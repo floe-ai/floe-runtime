@@ -57,6 +57,100 @@ test('run() rejects when the report is missing a required field', async () => {
   }
 });
 
+// Completeness gating: ACP's StopReason (https://agentclientprotocol.com/protocol/v1/prompt-turn#stop-
+// reasons, confirmed in the released schema.json's StopReason $def) is the ONLY signal that tells us
+// whether the agent's final message was actually finished ('end_turn') versus cut off mid-stream
+// ('max_tokens', 'max_turn_requests') - extraction must never run against a message that wasn't
+// confirmed complete. See #finishTurn's INCOMPLETE_STOP_REASONS map in src/adapters/copilot.mjs.
+test('run() extracts a report normally on end_turn (prose + fenced JSON already covered by schema.test.mjs; this pins the stopReason itself)', async () => {
+  const runtime = makeRuntime();
+  try {
+    const result = await runtime.run('worker', { prompt: 'do something', schema: SCHEMA }, '/tmp/work');
+    assert.equal(result.stopReason, 'end_turn');
+    assert.deepEqual(result.report, { ok: true, summary: 'Fixture output' });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('run() raises a distinct report_incomplete fault on max_tokens and never attempts to parse the truncated text', async () => {
+  const runtime = makeRuntime();
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[max-tokens] do something', schema: SCHEMA }, '/tmp/work'),
+      error => error.code === 'report_incomplete'
+        && error.message.includes('max_tokens')
+        && !/invalid_report/.test(error.code), // must be its OWN fault code, never conflated with malformed JSON
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('run() raises report_incomplete on max_turn_requests too (the other ACP "incomplete" stop reason)', async () => {
+  const runtime = makeRuntime();
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[max-turn-requests] do something', schema: SCHEMA }, '/tmp/work'),
+      error => error.code === 'report_incomplete' && error.message.includes('max_turn_requests'),
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('run() does NOT accept a truncated-but-brace-balanced fragment under max_tokens as a report (the silent-corruption case)', async () => {
+  const runtime = makeRuntime();
+  try {
+    // [max-tokens-balanced]'s fixture text is a COMPLETE, schema-valid JSON object - if extraction were
+    // mistakenly attempted despite the incomplete stopReason, it would wrongly succeed. It must not run.
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[max-tokens-balanced] do something', schema: SCHEMA }, '/tmp/work'),
+      error => error.code === 'report_incomplete',
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('run() fails closed on a stop reason outside ACP\'s known set, rather than assuming it is safe to parse', async () => {
+  const runtime = makeRuntime();
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[unknown-stop] do something', schema: SCHEMA }, '/tmp/work'),
+      error => error.code === 'report_incomplete' && error.message.includes('model_handoff'),
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('run() keeps only the LAST message when the agent sends two agent_message_chunk updates with different messageIds', async () => {
+  const runtime = makeRuntime();
+  try {
+    const result = await runtime.run('worker', { prompt: '[two-messages] do something', schema: SCHEMA }, '/tmp/work');
+    // The first message ("WRONG, superseded") must be fully discarded - schema.json's ContentChunk
+    // messageId field: "A change in messageId indicates a new message has started."
+    assert.deepEqual(result.report, { ok: true, summary: 'Fixture output' });
+    assert.ok(!result.text.includes('superseded'));
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('run() never lets an agent_thought_chunk contaminate the accumulated report text', async () => {
+  const runtime = makeRuntime();
+  try {
+    const result = await runtime.run('worker', { prompt: '[thought] do something', schema: SCHEMA }, '/tmp/work');
+    // The fixture's thought chunk carries JSON-shaped decoy text ("this is a THOUGHT, not the report") -
+    // if it were mistakenly accumulated, the report would come from it instead of the real message.
+    assert.deepEqual(result.report, { ok: true, summary: 'Fixture output' });
+    assert.ok(!result.text.includes('THOUGHT'));
+  } finally {
+    await runtime.close();
+  }
+});
+
 test('interrupt() cancels an in-flight prompt turn', async () => {
   const runtime = makeRuntime();
   try {

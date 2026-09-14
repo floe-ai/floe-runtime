@@ -23,10 +23,48 @@ export interface RunInput {
   blocks?: Array<Record<string, unknown>>;
 }
 
+/** A name/value pair, used for MCP stdio env and HTTP/SSE headers. */
+export interface McpNameValue {
+  name: string;
+  value: string;
+}
+
+/**
+ * An ACP MCP server connection descriptor, forwarded verbatim to the agent in
+ * `session/new` / `session/load` / `session/resume`. Shapes are exactly those
+ * defined by the Agent Client Protocol session-setup spec ("MCP Servers"):
+ *   - stdio (every agent MUST support it) has no `type` discriminator;
+ *   - http/sse are optional and gated on `mcpCapabilities.http` / `.sse`.
+ * @see https://agentclientprotocol.com/protocol/v1/session-setup
+ */
+export type McpServer =
+  | {
+      /** Human-readable server identifier. */
+      name: string;
+      /** Absolute path to the MCP server executable. */
+      command: string;
+      /** Command-line arguments passed to the server. */
+      args: string[];
+      /** Environment variables set when launching the server. */
+      env?: McpNameValue[];
+    }
+  | {
+      type: 'http';
+      name: string;
+      url: string;
+      headers: McpNameValue[];
+    }
+  | {
+      type: 'sse';
+      name: string;
+      url: string;
+      headers: McpNameValue[];
+    };
+
 export interface RunSettings {
   model?: string;
   timeoutMs?: number;
-  mcpServers?: unknown[];
+  mcpServers?: McpServer[];
 }
 
 /** Reuse hint from a previous run(); pass the prior sessionId to continue it. */
@@ -139,7 +177,7 @@ export class CopilotRuntime extends EventEmitter {
   interrupt(sessionId: string): Promise<void>;
   quiesce(sessionId: string): Promise<void>;
   retire(sessionId: string): Promise<{ status: string; reason?: string }>;
-  resume(sessionId: string, cwd: string, mcpServers?: unknown[], opts?: { goal?: string }): Promise<string>;
+  resume(sessionId: string, cwd: string, mcpServers?: McpServer[], opts?: { goal?: string }): Promise<string>;
   close(): Promise<void>;
 
   on(event: 'activity', listener: (event: ActivityEvent) => void): this;

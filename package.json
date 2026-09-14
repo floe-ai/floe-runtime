@@ -9,7 +9,10 @@
   "exports": {
     ".": "./src/index.mjs",
     "./adapters/codex": "./src/adapters/codex.mjs",
-    "./adapters/copilot": "./src/adapters/copilot.mjs"
+    "./adapters/copilot": {
+      "types": "./src/adapters/copilot.d.mts",
+      "default": "./src/adapters/copilot.mjs"
+    }
   },
   "engines": {
     "node": ">=20"

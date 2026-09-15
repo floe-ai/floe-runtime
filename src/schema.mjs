@@ -7,10 +7,10 @@
 //
 // Backends differ in how strictly they can be made to emit exactly this
 // JSON: Codex supports a server-enforced `outputSchema` on turn/start, while
-// ACP (Copilot) has no equivalent, so its adapter must rely on
+// Copilot's SDK adapter relies on
 // promptInstructionFor() plus this same validation/extraction path.
 //
-// LIVE EVIDENCE (against the real `copilot --acp` binary, a Star-Map-shaped
+// LIVE EVIDENCE (against the real Copilot runtime, a Star-Map-shaped
 // prompt: do a small task, then report against a schema) - the model reliably
 // produces VALID, schema-correct JSON. It just doesn't put ONLY that JSON in
 // its reply: a real response looked like
@@ -162,7 +162,7 @@ export function extractStructuredOutput(text, schema, { role = 'agent' } = {}) {
 /**
  * Renders an instruction block asking the model to reply with JSON matching
  * `schema`. Backends without server-enforced structured output (e.g.
- * Copilot/ACP) should append this to their prompt; backends with native
+ * Copilot) should append this to their prompt; backends with native
  * enforcement (e.g. Codex's outputSchema) don't need it.
  */
 export function promptInstructionFor(schema) {

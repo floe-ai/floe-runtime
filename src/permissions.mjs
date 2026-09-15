@@ -1,6 +1,6 @@
 // Backend-neutral permission-request normalization, shared by every
 // adapter. Consuming apps write ONE policy function against this shape
-// instead of separate code for Codex approval requests and ACP
+// instead of separate code for Codex and Copilot SDK approval requests.
 // `session/request_permission`:
 //
 //   normalized request: { runtime, sessionId, id, title, kind, options, raw }

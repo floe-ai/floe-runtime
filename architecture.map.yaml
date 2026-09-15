@@ -1,0 +1,97 @@
+version: 2
+system:
+  id: floe-runtime
+  name: floe-runtime
+  intent: Shared lifecycle runtime for vendor-managed coding-agent SDKs.
+  clusters:
+    - id: runtime
+      name: Runtime
+      intent: Session lifecycle, events, and shared validation.
+      cells:
+        - id: shared-contract
+          name: Shared Runtime Contract
+          intent: Owns the common lifecycle, validation, event, permission, and public export contracts.
+          paths:
+            - src/activity.mjs
+            - src/capabilities.mjs
+            - src/errors.mjs
+            - src/events.mjs
+            - src/fleet.mjs
+            - src/index.mjs
+            - src/jsonrpc.mjs
+            - src/permissions.mjs
+            - src/runtime.mjs
+            - src/schema.mjs
+            - src/session-reuse.mjs
+            - test/events.test.mjs
+            - test/fleet.test.mjs
+            - test/jsonrpc.test.mjs
+            - test/package-exports.test.mjs
+            - test/schema.test.mjs
+            - test/session-reuse.test.mjs
+            - test-smoke/helpers.mjs
+          writeAuthority:
+            allowedModules: []
+          modules:
+            - id: main
+              name: Main
+              intent: Shared lifecycle and public-contract implementation with deterministic contract tests.
+              paths:
+                - src/activity.mjs
+                - src/capabilities.mjs
+                - src/errors.mjs
+                - src/events.mjs
+                - src/fleet.mjs
+                - src/index.mjs
+                - src/jsonrpc.mjs
+                - src/permissions.mjs
+                - src/runtime.mjs
+                - src/schema.mjs
+                - src/session-reuse.mjs
+                - test/events.test.mjs
+                - test/fleet.test.mjs
+                - test/jsonrpc.test.mjs
+                - test/package-exports.test.mjs
+                - test/schema.test.mjs
+                - test/session-reuse.test.mjs
+                - test-smoke/helpers.mjs
+        - id: codex-sdk
+          name: Codex Adapter
+          intent: Owns the Codex app-server integration and its public adapter behavior.
+          paths:
+            - src/adapters/codex.mjs
+            - test/codex.test.mjs
+            - test/fake-codex.mjs
+            - test-smoke/codex.smoke.test.mjs
+          writeAuthority:
+            allowedModules: []
+          modules:
+            - id: main
+              name: Main
+              intent: Codex adapter implementation and contract tests.
+              paths:
+                - src/adapters/codex.mjs
+                - test/codex.test.mjs
+                - test/fake-codex.mjs
+                - test-smoke/codex.smoke.test.mjs
+        - id: copilot-sdk
+          name: Copilot SDK Adapter
+          intent: Owns the official Copilot SDK integration and its public contract.
+          paths:
+            - src/adapters/copilot.mjs
+            - src/adapters/copilot.d.mts
+            - test/copilot-sdk.test.mjs
+            - test/fake-copilot-sdk.mjs
+            - test-smoke/copilot-sdk.smoke.test.mjs
+          writeAuthority:
+            allowedModules: []
+          modules:
+            - id: main
+              name: Main
+              intent: SDK adapter implementation and contract tests.
+              paths:
+                - src/adapters/copilot.mjs
+                - src/adapters/copilot.d.mts
+                - test/copilot-sdk.test.mjs
+                - test/fake-copilot-sdk.mjs
+                - test-smoke/copilot-sdk.smoke.test.mjs

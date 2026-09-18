@@ -1,6 +1,6 @@
 // Backend-neutral command/tool activity normalization, shared by every
 // adapter. Consuming apps should never need to know whether a Codex
-// `item/started`+`item/completed` pair or an ACP `tool_call`+`tool_call_update`
+// `item/started`+`item/completed` pair or an SDK tool-event pair
 // sequence produced a given event - both adapters emit the same shape via
 // the Runtime 'activity' event:
 //
@@ -12,12 +12,12 @@
 //   synthetic id the adapter assigns per run() call for backends with no
 //   native turn id)
 // - id: a stable identifier for this specific piece of activity (Codex
-//   item.id, ACP toolCallId), used to correlate 'started' with its terminal
+//   item.id or SDK toolCallId), used to correlate 'started' with its terminal
 //   'completed'/'failed' event
 // - kind: normalized into a small closed set so callers can render/filter
 //   without a backend-specific switch statement
 // - status: 'started' | 'completed' | 'failed' - collapses Codex's two
-//   notifications and ACP's tool_call/tool_call_update stream into the same
+//   notifications and SDK tool events into the same
 //   three-state lifecycle
 // - title/command: human-readable label and (if applicable) the literal
 //   command line
@@ -37,21 +37,6 @@ export function codexActivityKind(itemType) {
     case 'mcpToolCall': return 'tool';
     case 'webSearch': return 'search';
     case 'reasoning': return 'think';
-    default: return 'other';
-  }
-}
-
-/** Maps an ACP `ToolKind` to a normalized activity kind. */
-export function acpActivityKind(toolKind) {
-  switch (toolKind) {
-    case 'read':
-    case 'edit':
-    case 'delete':
-    case 'move': return 'file';
-    case 'search': return 'search';
-    case 'execute': return 'command';
-    case 'think': return 'think';
-    case 'fetch': return 'fetch';
     default: return 'other';
   }
 }

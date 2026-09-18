@@ -6,7 +6,7 @@
 // bookkeeping every adapter needs. Adapters implement the abstract hooks
 // below to supply their own handshake and turn/session semantics; they must
 // still implement run()/interrupt()/quiesce()/retire() themselves since those
-// differ too much between Codex's thread/turn model and ACP's session/prompt
+// differ too much between Codex's thread/turn model and Copilot's SDK session
 // model to usefully share.
 //
 // Public Runtime interface (implemented by every adapter):

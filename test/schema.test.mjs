@@ -4,7 +4,7 @@ import { extractStructuredOutput, validate, promptInstructionFor } from '../src/
 
 const schema = { type: 'object', properties: { status: { type: 'string', enum: ['ok', 'error'] } }, required: ['status'], additionalProperties: false };
 
-// LIVE EVIDENCE: this is the exact text (verbatim) a real `copilot --acp` reply returned for a
+// LIVE EVIDENCE: this is the exact text (verbatim) a real Copilot reply returned for a
 // Star-Map-shaped prompt (do a small task, then report against a schema). This case alone proves the
 // regression AND the fix: the model's JSON was always valid, it was just not the whole reply.
 const REAL_COPILOT_REPLY = `Info: C:\\Development\\_temp\\acp-stream-test\\hello.txtNo version control exists in this folder - want me to run \`git init\` and publish it to your falllingreign GitHub account?

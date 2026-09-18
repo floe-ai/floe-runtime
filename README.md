@@ -1,19 +1,18 @@
 # floe-runtime
 
-A shared subprocess/JSON-RPC runtime for driving AI coding-agent CLIs (Codex,
-Copilot, ...) with one common lifecycle: spawn the CLI in its protocol/server
-mode, frame newline-delimited JSON-RPC messages, correlate requests and
-responses, manage session/turn start-interrupt-quiesce-retire, apply a
-session-reuse policy, and validate the agent's final structured JSON output.
+A shared runtime for driving Codex and Copilot coding agents with one common
+lifecycle: start, run, interrupt, quiesce, retire, reuse a session, and
+validate structured output. Codex uses its app-server protocol; Copilot uses
+the official `@github/copilot-sdk`.
 
-This package has no dependency on any consuming app - it does not know about
-Codex "roles", Star Map's schemas, or Floe's UI. Callers own their prompts,
-JSON Schemas, and permission policy; floe-runtime owns the plumbing.
+This package has no dependency on a consuming app. Callers own their prompts,
+JSON Schemas, and permission policy; floe-runtime owns the runtime lifecycle.
 
 ## Install
 
-This is a standalone local package (not yet published). Depend on it via a
-workspace/path reference, e.g. in a consuming app's `package.json`:
+Requires Node.js `^20.19.0 || >=22.12.0`.
+
+Use a workspace/path reference from a consuming app's `package.json`:
 
 ```json
 { "dependencies": { "floe-runtime": "file:../floe-runtime" } }
@@ -29,7 +28,7 @@ import { CodexRuntime } from 'floe-runtime/adapters/codex';
 
 const runtime = new CodexRuntime({ model: 'gpt-5-codex', timeoutMs: 20 * 60 * 1000 });
 
-await runtime.start();                 // spawns the subprocess, performs the handshake
+await runtime.start();                 // starts the selected backend
 
 const result = await runtime.run(
   'worker',                            // role label - only used in error messages
@@ -41,25 +40,24 @@ const result = await runtime.run(
 );
 // result: { report, text, threadId|sessionId, items, usage, elapsedMs, ... }
 
-await runtime.interrupt(result.threadId);  // cancel an active turn
-await runtime.quiesce(result.threadId);    // confirm the turn/session is fully stopped
-await runtime.retire(result.threadId);     // release the session (falls back to local-only retirement)
-await runtime.close();                     // terminate the subprocess
+const conversationId = result.threadId || result.sessionId;
+await runtime.interrupt(conversationId);  // cancel an active turn
+await runtime.quiesce(conversationId);    // confirm the turn/session is fully stopped
+await runtime.retire(conversationId);     // release the conversation
+await runtime.close();                    // stop the selected backend
 ```
 
 Events: `runtime.on('ready'|'lost'|'diagnostic'|'notification'|'request'|'activity', ...)`.
-`'request'` fires for subprocess-initiated JSON-RPC requests (Codex approval/
-elicitation prompts, Copilot `session/request_permission`) - see
+`'request'` fires for subprocess-initiated JSON-RPC requests and SDK Copilot
+permission callbacks - see
 [Permission policy](#permission-policy) below for how these get answered.
 `'activity'` fires a backend-neutral event for every tool/command the agent
 runs - see [Activity events](#activity-events) below.
 
 ## Activity events
 
-Both adapters normalize command/tool execution into one backend-neutral
-`activity` event shape, so a consuming app never has to parse raw Codex
-`item/started`/`item/completed` notifications or ACP `tool_call`/
-`tool_call_update` notifications directly:
+Both adapters normalize command and tool execution into one backend-neutral
+`activity` event shape:
 
 ```js
 runtime.on('activity', event => { /* ... */ });
@@ -69,22 +67,19 @@ runtime.on('activity', event => { /* ... */ });
 
 - `kind` is normalized to one of `command`, `file`, `search`, `fetch`,
   `think`, `tool`, `other` (see `src/activity.mjs`).
-- `status` is normalized to `started`, `completed`, or `failed`. Codex emits
-  one `item/started` and one `item/completed`; ACP emits one `tool_call`
-  (creation) followed by zero or more `tool_call_update` messages for the
-  same `toolCallId` - both adapters correlate by id internally and emit the
-  same two-or-three-event stream (`started` then `completed`/`failed`).
+- `status` is normalized to `started`, `completed`, or `failed`. Codex and
+  the Copilot SDK both emit a correlated start and terminal event stream.
 - `raw` is the untouched backend notification payload, kept as an escape
   hatch for callers that need backend-specific detail beyond the normalized
   fields.
 
 ## Permission policy
 
-Every subprocess-initiated permission/approval request (Codex's
+Every permission or approval request (Codex's
 `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
 `item/permissions/requestApproval`, confirmation-shaped `mcpServer/elicitation/request`;
-Copilot's `session/request_permission`) is normalized into one shape and can
-be answered with one policy function instead of separate backend-specific code:
+and Copilot SDK permission callbacks) is normalized into one shape and can be
+answered with one policy function instead of separate backend-specific code:
 
 ```js
 const runtime = new CodexRuntime({
@@ -98,9 +93,12 @@ const runtime = new CodexRuntime({
 ```
 
 **Precedence** (highest wins):
-1. An explicit `runtime.on('request', ...)` listener - if any listener is
-   attached, floe-runtime never auto-answers *any* request; the caller has
-   full manual control via `runtime.respond()`/`runtime.respondError()`.
+1. An explicit `runtime.on('request', ...)` listener. SDK Copilot listeners
+   receive a `permission/request` message and decide it through
+   `runtime.respond(message.id, { decision:
+   'allow_once'|'allow_always'|'reject_once'|'reject_always'|'cancel' })`.
+   `respondError()` denies it. An unanswered SDK request is denied after
+   `unhandledRequestTimeoutMs`.
 2. `permissionPolicy(request)` - called only when no `'request'` listener is
    attached and the request is one floe-runtime recognizes as a permission
    request (`normalizePermissionRequest()` returned non-null). May be async.
@@ -117,12 +115,12 @@ request - even ones `normalizePermissionRequest()` doesn't recognize, or ones
 a caller's own `'request'` listener forgets to answer - by calling
 `respondError()` if nothing has responded to it in time.
 
-Not every request type Codex or ACP can send is recognized as a permission
-request: real data-form `mcpServer/elicitation/request` payloads (ones with
-actual required fields, not a plain yes/no confirmation) return `null` from
-`normalizePermissionRequest()` because no generic policy can fabricate real
-typed answers - those remain available only via the `'request'` event for
-manual handling (subject to the same unhandled-request timeout).
+Not every Codex request is a permission request. Real data-form
+`mcpServer/elicitation/request` payloads (ones with actual required fields,
+not a plain yes/no confirmation) return `null` from
+`normalizePermissionRequest()` because no generic policy can fabricate typed
+answers. They remain available through the `'request'` event, subject to the
+same unhandled-request timeout.
 
 ## Schema ownership
 
@@ -130,10 +128,9 @@ floe-runtime ships only the validation *mechanism* (`validate`,
 `extractStructuredOutput`, `promptInstructionFor` in `src/schema.mjs`). Each
 consuming app defines its own per-role JSON Schemas and prompt templates and
 passes the finished `{ prompt, schema }` into `run()`. Codex can enforce
-`schema` server-side (`outputSchema` on `turn/start`); Copilot/ACP cannot, so
-its prompt text should itself ask for JSON matching the schema (see
-`promptInstructionFor(schema)`), with the same client-side validation path
-used for both backends.
+`schema` server-side (`outputSchema` on `turn/start`). Copilot SDK prompts
+should request JSON matching the schema (see `promptInstructionFor(schema)`),
+then use the shared client-side validation path.
 
 ## Adapters
 
@@ -152,53 +149,22 @@ if that optional API is unavailable.
 
 ### CopilotRuntime (`src/adapters/copilot.mjs`)
 
-Spawns `copilot --acp` and drives the Agent Client Protocol
-(https://agentclientprotocol.com): `initialize` -> `session/new` ->
-`session/prompt` (+ `session/update` notifications) -> response with a
-`stopReason`. Key differences from Codex, confirmed against the ACP spec:
+Copilot uses the official `@github/copilot-sdk@1.0.13` and its bundled runtime.
+The adapter subscribes before sending a prompt. A turn completes at
+`session.idle`; `assistant.turn_end` is a model-call boundary within the agent
+loop. Cancellation waits for abort acknowledgement followed by `session.idle`;
+missing idle raises `quiescence_unknown`.
 
-- **No server-enforced structured output.** The prompt text must itself
-  request JSON; the reply is parsed/validated client-side only.
-- **`session/load` replays the entire conversation history** back as
-  `session/update` notifications - it is not a cheap resume. This adapter's
-  default reuse policy therefore keeps sessions alive only **in memory** for
-  the life of the subprocess; `session/load` is exposed separately via
-  `runtime.resume(sessionId, cwd)` for optional cold-start recovery only, and
-  is never called automatically inside `run()`.
-- **Permission requests** (`session/request_permission`) are normalized into
-  the same backend-neutral shape Codex's approval requests use - see
-  [Permission policy](#permission-policy). ACP's option kinds (`allow_once`,
-  `allow_always`, `reject_once`, `reject_always`) map 1:1 onto the shared
-  decision vocabulary.
-- **Session reuse key omits `permissions`.** Unlike Codex's `sessionKey`,
-  which hashes in `settings.permissions`, Copilot's key passes `permissions:
-  null` deliberately: ACP has no session-scoped permission profile (`session/new`
-  takes no approval/sandbox params - every tool call is approved individually
-  via `session/request_permission`), so there is no backend permission
-  *state* for the key to capture. If a caller's `permissionPolicy` itself has
-  meaningfully different versions that should force a fresh session, fold
-  that identity into the `settings` argument, which **is** hashed into the
-  key - `permissionPolicy` is a runtime-level constructor option floe-runtime
-  cannot inspect. See the comment on `sessionKey()` in `src/adapters/copilot.mjs#run()`.
-- **`quiesce()`** interrupts (`session/cancel`) and waits for the turn to
-  settle; ACP has no background-terminal enumeration equivalent to Codex's,
-  so quiescence there is confirmed only at the turn level.
-- **`retire()`** calls `session/close` only if the agent advertises
-  `agentCapabilities.sessionCapabilities.close` (confirmed live: there is no
-  `delete` key, and `session/delete` itself does not exist on the wire -
-  it returns JSON-RPC error `-32601 Method not found`); otherwise it retires
-  the session locally, same fallback shape as the Codex adapter.
-- **Model selection requires an explicit follow-up call.** `session/new`
-  silently ignores a `model` param (confirmed live: the returned
-  `currentModelId` does not change) - `run()` therefore calls
-  `session/set_model` itself whenever the requested model differs from the
-  session's tracked current model, on both fresh and reused sessions. Its
-  result shape is also a wrapper object (`models: { availableModels: [...],
-  currentModelId }`), not a bare array - `models()` normalizes this.
-- **Most of Copilot's control surface (permissions, autopilot goals,
-  compaction, usage) is exposed only as advertised slash commands**, sent as
-  ordinary `session/prompt` text, not as JSON-RPC methods - see
-  `available_commands_update` and [Parity surface](#parity-surface) below.
+`session.error`, model-call failures, missing final messages, aborted turns,
+and incomplete structured output are reported as distinct failures.
+`systemMessage` uses the SDK append/customize form so SDK guardrails remain
+active. `tools`, `availableTools`, and `excludedTools` configure host-owned
+tools. Model listing and selection use SDK APIs; authentication is owned by
+the SDK runtime.
+
+`input.blocks` accepts text, file, directory, selection, blob, and image
+blocks, which are mapped to SDK message options. Other block types, including
+embedded context, fail with `unsupported_prompt_block` before sending.
 
 ## Parity surface
 
@@ -210,20 +176,23 @@ equivalent capability, the method throws a `RuntimeFault` with code
 
 | Method | Codex | Copilot | Notes |
 | --- | --- | --- | --- |
-| `setModel(id, modelId)` | ✅ (override applied on next `turn/start` - no confirmed live mid-thread RPC) | ✅ `session/set_model` | |
-| `releaseSession(id)` / `retire(id)` | ✅ `thread/unsubscribe` | ✅ `session/close` | |
-| `setMode(id, mode)` | ❌ unsupported | ✅ `session/set_mode` (`interactive`\|`plan`\|`autopilot` -> ACP mode URIs) | Codex has no session-mode concept |
-| `setPermissions(id, level)` | ✅ `approvalPolicy`/`sandbox`/`sandboxPolicy` override, applied next `turn/start` | ✅ `/allow-all`, `/permissions default` (`'read-only'` unsupported - no deny-by-default control command exists) | |
-| `setGoal(id, objective, opts)` | ✅ `thread/goal/set`\|`get`\|`clear` (`opts.maxCredits` unsupported - throws) | ✅ `/autopilot <objective> --max-ai-credits <N>` | `opts.maxCredits` is Copilot-only |
-| `compact(id, focus)` | ✅ `thread/compact/start` | ✅ `/compact [focus]` | |
-| `usage(id)` | ✅ `account/usage/read` + `account/rateLimits/read` | ✅ primary: structured `usage_update` notification; falls back to `/usage` text parsing only if no structured update has arrived | Structured push data wins - regex-parsing prose is a last resort, not the main path |
-| `steer(id, text)` | ✅ `turn/steer` (requires an active turn) | ❌ unsupported | ACP has no way to redirect a running prompt |
-| `fork(id)` | ✅ `thread/fork` | ✅ `session/fork` | |
-| `listSessions()` | ✅ `thread/list` | ✅ `session/list` | |
-| `resume(id)` | ✅ `thread/resume` | ✅ `session/load` (full history replay, not a cheap resume) | |
-| streaming (`'stream'` event) | ✅ `item/agentMessage/delta`, `item/reasoning/textDelta`, `item/reasoning/summaryTextDelta`, `item/commandExecution/outputDelta` | ✅ `agent_message_chunk`, tool-call content deltas | |
-| rich prompt input (`input.blocks`) | ✅ passed straight through to `turn/start` | ✅ passed straight through to `session/prompt` | floe-runtime does not translate block shapes between backends |
-| `availableCommands(id)` | ❌ unsupported | ✅ tracked from `available_commands_update` | |
+| `setModel(id, modelId)` | ✅ applied on the next `turn/start` | ✅ SDK session model selection | |
+| `releaseSession(id)` / `retire(id)` | ✅ `thread/unsubscribe` | ✅ SDK session disconnect | |
+| `setMode(id, mode)` | ❌ unsupported | ❌ unsupported | Codex has no session-mode concept |
+| `setPermissions(id, level)` | ✅ `approvalPolicy`/`sandbox`/`sandboxPolicy` override, applied next `turn/start` | ❌ unsupported; configure `permissionPolicy` at construction | |
+| `setGoal(id, objective, opts)` | ✅ `thread/goal/set`\|`get`\|`clear` (`opts.maxCredits` unsupported) | ❌ unsupported | |
+| `compact(id, focus)` | ✅ `thread/compact/start` | ❌ unsupported | |
+| `usage(id)` | ✅ `account/usage/read` + `account/rateLimits/read` | ❌ unsupported | |
+| `steer(id, text)` | ✅ `turn/steer` (requires an active turn) | ❌ unsupported | |
+| `fork(id)` | ✅ `thread/fork` | ❌ unsupported | |
+| `listSessions()` | ✅ `thread/list` | ✅ SDK `listSessions()` | |
+| `resume(id)` | ✅ `thread/resume` | ✅ SDK `resumeSession()` | |
+| streaming (`'stream'` event) | ✅ agent-message, reasoning, and command-output deltas | ✅ assistant-message and reasoning deltas | |
+| rich prompt input (`input.blocks`) | ✅ passed straight through to `turn/start` | ✅ text blocks normalized to the SDK prompt | |
+| `availableCommands(id)` | ❌ unsupported | ❌ unsupported | The SDK has no command-advertisement surface |
+| `fleetMode(id, prompt)` | ❌ unsupported | ❌ unsupported | |
+| `scheduleRecurring(id, interval, prompt)` | ❌ unsupported | ❌ unsupported | |
+| `scheduleOnce(id, delay, prompt)` | ❌ unsupported | ❌ unsupported | |
 
 Call `runtime.capabilities()` to get this table as data:
 
@@ -231,7 +200,7 @@ Call `runtime.capabilities()` to get this table as data:
 runtime.capabilities();
 // { setModel, releaseSession, setMode, setPermissions, setGoal, compact,
 //   usage, steer, fork, listSessions, resume, streaming, richPrompt,
-//   availableCommands }
+//   availableCommands, fleetMode, scheduleRecurring, scheduleOnce }
 ```
 
 ### Streaming events
@@ -278,8 +247,7 @@ conversation by itself.**
   `ephemeral: false` by default (`thread/resume` can restore it later);
   passing `settings.ephemeral: true` opts a single sensitive one-shot task out
   of persistence - that thread can never be `resume()`d afterwards. Copilot
-  sessions are always resumable via `session/load` (`loadSession` capability
-  permitting).
+  sessions can be resumed through the SDK when the backend retains them.
 - **Discovery after a restart**: an app that restarts has no in-memory record
   of its previous sessionId/threadId beyond whatever *it* chooses to persist
   (e.g. in its own database). `listSessions()` (`thread/list` / `session/list`)
@@ -316,37 +284,18 @@ conversation by itself.**
   record of the last `setGoal()` call for that thread (only useful for a
   same-process resume). A successful re-apply publishes `'goalReapplied'`; a
   failed one publishes an unmissable `'goalReapplyFailed'` event plus a
-  diagnostic - resume() does not fail outright over this, since the
-  conversation itself is still perfectly usable, but silently continuing with
-  a cleared objective is exactly the bug this closes. Copilot's `resume()`
-  accepts the same `{ goal }` option for API symmetry, though whether
-  `session/load` has the same goal-loss behaviour is unconfirmed.
+  diagnostic - `resume()` does not fail outright over this, since the
+  conversation itself remains usable.
 
 ## Distinguishing "out of money" from a crash
 
-A backend hitting its own spend/quota wall must never look like a generic
-task failure - an unattended overnight run should never leave you debugging
-a phantom bug when the real answer is a billing limit.
+A Codex spend or quota limit must not look like a generic task failure:
 
-- **Codex (confirmed live)**: a spend-cap turn arrives as an ordinary
+- A spend-cap turn arrives as an ordinary
   `turn/completed` with `turn.status === 'failed'` and
   `turn.error.codexErrorInfo === 'usageLimitExceeded'`. This is detected and
   raised as a distinct `usage_limit_exceeded` `RuntimeFault` (not the generic
   `turn_failed`), carrying the backend's own human-readable message.
-- **Copilot (UNCONFIRMED heuristic)**: the exact ACP shape for a quota/limit
-  refusal could not be confirmed without live access. As a best-effort,
-  clearly-marked extension point, a `stopReason: 'refusal'` whose accumulated
-  message text matches quota/credit/spend-cap language also raises
-  `usage_limit_exceeded` - see `looksLikeUsageLimit()` in
-  `src/adapters/copilot.mjs`. Replace this the moment the real shape is
-  observed live.
-- **One consistent signal regardless of source**: a backend-reported
-  `usage_limit_exceeded` publishes the SAME `'budgetCeilingReached'` event
-  type a `Fleet`'s own configured budget ceiling uses (see below), tagged
-  `source: 'backend'`. An app therefore has exactly one way to learn "the
-  fleet stopped for money reasons," whether the fleet's own ceiling or the
-  backend's own billing limit tripped first - `Fleet` wires this in even when
-  no `budget.ceiling` was ever configured.
 
 ## Other Codex notifications now surfaced (not silently dropped)
 
@@ -354,8 +303,7 @@ Confirmed arriving from the real `codex app-server` and previously ignored
 entirely:
 
 - `account/rateLimits/updated` - the early warning before a spend-cap wall.
-  Folded into the same `'usage'` event type the budget/Fleet surface already
-  watches (not a new event type).
+  Surfaced as a `'usage'` event.
 - `error` - a server-level error. Surfaced as a plain-text `'diagnostic'`
   event AND a structured `'serverError'` event.
 - `hook/started` / `hook/completed` - lifecycle hooks. Folded into the
@@ -391,10 +339,8 @@ references - safe to `JSON.stringify`, log, or store):
 - `seq` - a monotonic integer, per `conversationId` (a threadId/sessionId).
 - `type` - `'activity'`, `'stream'`, `'turn'`, `'replay'`, `'replayComplete'`,
   or `'gap'`.
-- `replay` - `true` while the event is part of replayed history (e.g. Codex's
-  synthetic post-`resume()` snapshot, or Copilot's `session/load` notification
-  burst), `false` once activity is live. A `'replayComplete'` event marks the
-  transition.
+- `replay` - `true` while the event is part of replayed history, `false` once
+  activity is live. A `'replayComplete'` event marks the transition.
 - `data` - the same shape the matching named event (`'activity'`, `'stream'`,
   etc.) already carries; named events (`runtime.on('activity', ...)`) keep
   working unchanged.
@@ -543,22 +489,13 @@ pretend otherwise:
 
 | Backend | Fleet-level admission control | Backend-enforced cap |
 | --- | --- | --- |
-| Copilot | Yes | Yes - `fleet.setGoal()` auto-injects the fleet's remaining budget as Copilot's own `/autopilot --max-ai-credits` second line of defence, unless you pass `maxCredits` explicitly |
+| Copilot SDK | Yes | Unsupported |
 | Codex | Yes | No - Codex has no credit cap of any kind; measurement + fleet-level admission control is all that's possible |
 
 Spend is aggregated as **latest known cost per agent**, summed - never as a
 running total of raw usage-event deltas, because both backends' usage
 notifications report a session's cumulative cost-to-date, not a per-event
 increment (double-counting them would over-report spend).
-
-A backend can also report its OWN spend/quota wall independently of
-`Fleet`'s configured `ceiling` (Codex's confirmed `usageLimitExceeded`, or
-Copilot's best-effort refusal heuristic - see "Distinguishing 'out of money'
-from a crash" above). That trips the exact same admission-control gate:
-`Fleet` emits `'budgetCeilingReached'` (tagged `source: 'backend'`), marks
-`budget.exceeded`, and rejects queued work - even if no `ceiling` was ever
-configured. One event, one meaning, regardless of which side noticed the
-wall first.
 
 ### Concurrency and queueing
 
@@ -569,56 +506,10 @@ active-turn count) and `'admission'` events so an app can show what's
 waiting and why. The queue drains only from turn-settlement/shard-loss/agent-
 retirement events - never a timer (see "No polling, anywhere").
 
-### Two different swarm shapes: `/fleet` vs. Fleet-of-sessions
-
-Copilot's own `/fleet` control command (`fleet.fleetMode(agentId, prompt)`)
-fans out parallel **subagents inside one session** - a different shape from
-this `Fleet` class's pool of independent sessions:
-
-- Use Copilot's `/fleet` for a short parallel burst that shares one context
-  (one conversation, several subagents working on parts of it at once).
-- Use this `Fleet` class for long-lived, independent agents with separate
-  conversations, potentially spanning both backends.
-
-Codex has no equivalent to Copilot's `/fleet` - `fleetMode()` is `unsupported`
-on Codex agents.
-
-### Backend-side scheduling
-
-Copilot also advertises `/every <interval> <prompt>` (recurring) and
-`/after <delay> <prompt>` (one-shot), exposed as `fleet.scheduleRecurring()`
-and `fleet.scheduleOnce()`. **These are backend-side timers** - the Copilot
-CLI process schedules and wakes itself; floe-runtime is not polling anything
-to support this, and this does not relax the no-polling rule anywhere else in
-the codebase. Codex has no equivalent - both methods are `unsupported` on
-Codex agents.
-
-## Prompt text is executed verbatim
-
-Prompt text (and Copilot's advertised slash commands, sent as ordinary prompt
-text) is passed to the backend **exactly as given - never sanitized,
-escaped, or filtered**. floe-runtime is a gateway: it must behave exactly as
-if the user had typed into the CLI themselves. If your app composes prompts
-programmatically (e.g. concatenating user input), you are responsible for
-whatever that produces - including accidentally triggering a control command.
-
-Two concrete gotchas to design around:
-
-- On Copilot, a bare `/goal` does **not** print help text - it immediately
-  switches the session into autopilot mode. Any leading `/` in prompt text is
-  live control-command syntax, not a plain message.
-- `availableCommands()` (P14, backed by the `available_commands_update`
-  notification) is a **UI hint only, not authoritative**. Confirmed: `/goal`
-  works over ACP despite never appearing in `available_commands_update`.
-  Never gate whether you allow/attempt a command on whether it was
-  advertised - the advertised list can be incomplete.
-
 ## Shared modules
 
-- `src/runtime.mjs` - base `Runtime` class: subprocess lifecycle, start()
-  dedup, `ready`/`lost`/`diagnostic`/`notification`/`request` event wiring.
-  Adapters implement `handshake()`, `onNotification()`, `onRequest()`,
-  `onLost()`, `onClosing()`.
+- `src/runtime.mjs` - base `Runtime` class: lifecycle, start() dedup, and
+  `ready`/`lost`/`diagnostic`/`notification`/`request` event wiring.
 - `src/jsonrpc.mjs` - `JsonRpcPeer`: newline-delimited JSON-RPC framing over
   a child process's stdio, request/response correlation, timeouts.
 - `src/session-reuse.mjs` - `sessionKey()` (digest of role/cwd/model/settings/
@@ -626,8 +517,8 @@ Two concrete gotchas to design around:
   confirmed-stopped state, the precondition for reuse and retirement).
 - `src/schema.mjs` - `validate()` (small JSON-Schema-subset validator),
   `extractStructuredOutput()`, `promptInstructionFor()`.
-- `src/activity.mjs` - the normalized activity event shape and each backend's
-  `kind` mapping (`codexActivityKind()`, `acpActivityKind()`).
+- `src/activity.mjs` - the normalized activity event shape and Codex
+  `kind` mapping (`codexActivityKind()`).
 - `src/events.mjs` - `EventLog` (the bounded, sequenced, per-conversation
   replay buffer) and `watchEvents()` (the async-iterable live feed backing
   `Runtime#events()`).
@@ -645,14 +536,11 @@ Two concrete gotchas to design around:
 npm test
 ```
 
-Runs `node --test` against `test/*.test.mjs`, using `test/fake-codex.mjs` and
-`test/fake-copilot.mjs` - small stdin/stdout fixture scripts that speak just
-enough of each protocol to exercise start/run/interrupt/quiesce/retire/reuse,
-with no live network calls or real CLI installs required. `test/fleet.test.mjs`
-exercises `Fleet` (shard saturation/queueing, crash recovery for persistent
-vs. ephemeral agents, budget-ceiling admission control, event-driven queue
-draining) against the same two fixtures - no additional fixture protocol was
-needed beyond a `debug/crash` hook that exits the fixture process on demand.
+Runs `node --test` against `test/*.test.mjs`, using Codex and Copilot SDK
+fixtures to exercise start, run, interrupt, quiesce, retire, and reuse
+without live network calls or installed coding-agent CLIs. Fleet tests cover
+shard saturation and queueing, persistent and ephemeral crash recovery,
+budget admission control, and event-driven queue draining.
 
 ## Smoke tests (real binaries, real cost)
 
@@ -660,25 +548,13 @@ needed beyond a `debug/crash` hook that exits the fixture process on demand.
 npm run smoke
 ```
 
-Runs `node --test` against `test-smoke/*.smoke.test.mjs` - a small, SEPARATE
-suite that spawns the REAL installed `codex`/`copilot` binaries. `npm test`
-never runs these; they are not fake-based, they cost real API credits, and
-they take real wall-clock time (multiple real process spawns and model
-turns). See `test-smoke/README.md` for full details.
+Runs `node --test` against `test-smoke/*.smoke.test.mjs`. These smoke tests
+exercise real Codex and Copilot SDK sessions. `npm test` never runs them;
+they require authentication, use API credits, and take longer than fixture
+tests. See `test-smoke/README.md` for full details.
 
-Each test probes for its binary/authentication first and skips cleanly (with
-an explicit reason) rather than failing when it is unavailable. As of this
-writing, Codex's smoke coverage skips with `Codex unavailable: spend cap
-reached` - the workspace this was developed against has exhausted its spend
-cap until an October 1st reset - which is itself a live confirmation of the
-`usage_limit_exceeded` fault detection above, not a bug in the suite.
+Each test checks its required authentication or runtime first and skips with
+an explicit reason when unavailable.
 
-The most important scenario is resume-across-real-process-death: plant a
-codeword via a real turn, `SIGKILL` the real subprocess (not a graceful
-`close()`), start a brand-new runtime instance, `resume()` the session, and
-confirm the agent still recalls the codeword - while asserting replayed
-history is correctly flagged `replay: true` and never mistaken for live
-activity. This is currently verified working against the real Copilot
-binary; the identical Codex test is written and ready, pending the spend cap
-reset.
-
+Smoke coverage includes session resumption after runtime shutdown and checks
+that replayed history is identified as replay rather than live activity.

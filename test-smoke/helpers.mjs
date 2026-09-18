@@ -22,7 +22,7 @@ export async function probe(makeRuntime, label) {
   }
 }
 
-export function makeCopilotRuntime(options = {}) {
+export function makeCopilotSdkRuntime(options = {}) {
   return new CopilotRuntime({ timeoutMs: 120000, ...options });
 }
 

@@ -24,20 +24,12 @@ unavailable, rather than failing the suite. You should expect to see:
   confirmation of the F9 `usage_limit_exceeded` fault detection in
   `src/adapters/codex.mjs`, not a bug in the suite.
 
-Coverage is intentionally minimal (one trivial prompt per scenario, the
-cheapest available model - `claude-haiku-4.5` for Copilot) to keep the real
-cost small while still exercising:
+Coverage is intentionally minimal to keep the real cost small while still
+exercising:
 
-1. Copilot handshake over the real subprocess (regression guard for the B3
-   Windows executable-resolution defect).
-2. Copilot `session/new` returning a live model catalogue and
-   `session/set_model` actually changing the model (B1 guard).
-3. Copilot `session/close` (B2 guard).
-4. Copilot resume across a REAL process death: start a session, plant a
-   codeword, SIGKILL the subprocess (not a graceful `close()`), start a
-   brand-new `CopilotRuntime`, `resume()` the session, and confirm the agent
-   still recalls the codeword. Also asserts replayed history is correctly
-   flagged `replay: true` and is never mistaken for live activity.
-5. Codex: the identical resume-across-death test, written and ready to run
-   the moment the spend cap resets - it currently skips cleanly instead of
-   failing.
+1. Copilot SDK startup through the bundled runtime and retrieval of the live
+   authenticated model catalogue.
+2. Codex resume across a REAL process death: start a session, plant a codeword,
+   SIGKILL the subprocess (not a graceful `close()`), start a brand-new
+   `CodexRuntime`, `resume()` the session, and confirm the agent still recalls
+   the codeword. This currently skips cleanly when Codex is unavailable.

@@ -172,7 +172,22 @@ export interface CopilotToolPolicyFacts {
   paths: string[];
   urls: string[];
   requestSandboxBypass: boolean;
+  arguments: unknown;
   argumentDigest: string;
+  fullCommandText?: string;
+  commandSegments?: Array<{ identifier: string | null; fullCommandText: string }>;
+  createsFile?: boolean;
+  fileText?: string;
+  oldText?: string;
+  newText?: string;
+  patch?: string;
+  changes?: Array<{
+    kind: 'add' | 'update' | 'delete';
+    path: string;
+    moveTo?: string | null;
+    content?: string;
+    diff?: string[];
+  }>;
   [key: string]: unknown;
 }
 
@@ -186,28 +201,52 @@ export interface CopilotPermissionRequest extends PermissionRequest {
 export const COPILOT_TOOL_MANIFEST_VERSION: string;
 export const COPILOT_BUILTIN_TOOL_MANIFEST: Readonly<Record<string, Readonly<Record<string, Readonly<{
   operationId: string;
-  permissionKind: string;
+  catalogs: readonly string[];
 }>>>>>;
 
 export interface CopilotToolSelection {
   filters: readonly string[];
   expectedNames: readonly string[];
-  builtins: ReadonlyMap<string, Readonly<{ operationId: string; permissionKind: string }>>;
+  builtins: ReadonlyMap<string, Readonly<{ operationId: string; catalogs: readonly string[] }>>;
+  customNames: readonly string[];
+  catalog: string;
   manifestVersion: string;
 }
+
+export function copilotToolCatalogForModel(model?: string, platform?: NodeJS.Platform): readonly string[];
 
 export function resolveCopilotToolSelection(options?: {
   tools?: HostTool[];
   availableTools?: string[];
   excludedTools?: string[];
+  model?: string;
   platform?: NodeJS.Platform;
 }): CopilotToolSelection;
 
-export function normalizeCopilotPermissionRequest(
-  request: Record<string, unknown>,
+export function normalizeCopilotToolCall(
+  input: { sessionId?: string; toolName?: string; toolArgs?: unknown },
   invocation: { sessionId?: string },
   selection: CopilotToolSelection,
+  toolCallId: string,
 ): CopilotPermissionRequest;
+
+export const normalizeCopilotPermissionRequest: typeof normalizeCopilotToolCall;
+
+export interface CopilotPreToolHookOutput {
+  permissionDecision: 'allow' | 'deny';
+  permissionDecisionReason?: string;
+}
+
+export function createCopilotToolHook(options: {
+  selection: CopilotToolSelection;
+  policy?: (request: CopilotPermissionRequest) => PermissionPolicyDecision | Promise<PermissionPolicyDecision>;
+  timeoutMs: number;
+  toolCallId?: () => string;
+  onDiagnostic?: (message: string) => void;
+}): (
+  input: { sessionId?: string; toolName?: string; toolArgs?: unknown },
+  invocation?: { sessionId?: string },
+) => Promise<CopilotPreToolHookOutput>;
 
 export interface CopilotRuntimeOptions {
   model?: string;
@@ -221,7 +260,8 @@ export interface CopilotRuntimeOptions {
   availableTools?: string[];
   excludedTools?: string[];
   permissionPolicy?: (request: CopilotPermissionRequest) => PermissionPolicyDecision | Promise<PermissionPolicyDecision>;
-  defaultPermissionDecision?: 'reject_once';
+  defaultPermissionDecision?: 'allow_once';
+  toolPolicyTimeoutMs?: number;
   unhandledRequestTimeoutMs?: number;
 }
 

@@ -7,7 +7,10 @@ import {
   CopilotEngineAccountAdapter,
   CopilotRuntime,
   copilotChildEnvironment,
+  copilotToolCatalogForModel,
+  createCopilotToolHook,
   defineTool,
+  normalizeCopilotToolCall,
   normalizeCopilotPermissionRequest,
   resolveCopilotToolSelection,
 } from 'floe-runtime/adapters/copilot';
@@ -16,9 +19,12 @@ test('Copilot package entry point exports its runtime, account adapter, and help
   assert.equal(typeof CopilotRuntime, 'function');
   assert.equal(typeof CopilotEngineAccountAdapter, 'function');
   assert.equal(typeof copilotChildEnvironment, 'function');
+  assert.equal(typeof copilotToolCatalogForModel, 'function');
+  assert.equal(typeof createCopilotToolHook, 'function');
   assert.equal(typeof defineTool, 'function');
   assert.equal(typeof COPILOT_TOOL_MANIFEST_VERSION, 'string');
   assert.equal(typeof COPILOT_BUILTIN_TOOL_MANIFEST, 'object');
+  assert.equal(typeof normalizeCopilotToolCall, 'function');
   assert.equal(typeof normalizeCopilotPermissionRequest, 'function');
   assert.equal(typeof resolveCopilotToolSelection, 'function');
 });

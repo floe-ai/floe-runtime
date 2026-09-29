@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   COPILOT_TOOL_MANIFEST_VERSION,
   CopilotRuntime,
-  normalizeCopilotPermissionRequest,
+  copilotToolCatalogForModel,
+  normalizeCopilotToolCall,
   resolveCopilotToolSelection,
 } from '../src/adapters/copilot.mjs';
 import { FakeCopilotClient } from './fake-copilot-sdk.mjs';
@@ -107,6 +108,8 @@ test('SDK runtime registers system messages, direct tools, and narrow tool allow
     assert.deepEqual(client.createdConfig.excludedTools, []);
     assert.equal(client.createdConfig.enableFileHooks, false);
     assert.equal(client.createdConfig.enableConfigDiscovery, false);
+    assert.equal(typeof client.createdConfig.hooks.onPreToolUse, 'function');
+    assert.equal(typeof client.createdConfig.onPermissionRequest, 'function');
     assert.deepEqual(client.createdConfig.toolSearch, { enabled: false });
     assert.deepEqual(client.createdConfig.mcpServers, {});
     assert.deepEqual(client.createdConfig.includedBuiltinSkills, []);
@@ -116,12 +119,12 @@ test('SDK runtime registers system messages, direct tools, and narrow tool allow
         approveAllReadPermissionRequests: false,
         rules: { approved: [], denied: [] },
         paths: {
-          unrestricted: false,
+          unrestricted: true,
           additionalDirectories: [],
-          includeTempDirectory: false,
+          includeTempDirectory: true,
           workspacePath: 'C:\\work',
         },
-        urls: { unrestricted: false, initialAllowed: [] },
+        urls: { unrestricted: true, initialAllowed: [] },
       }],
       ['setApproveAll', { enabled: false }],
       ['setMode', { mode: 'manual' }],
@@ -209,35 +212,32 @@ test('SDK runtime capabilities do not advertise unsupported control methods', ()
   assert.throws(() => runtime.availableCommands('session-1'), error => error.code === 'capability_unsupported');
 });
 
-test('SDK permission listener has precedence and responds through runtime.respond', async () => {
-  const { client, runtime } = makeRuntime({
-    availableTools: ['builtin:view'],
-    permissionPolicy: () => 'reject_once',
-  });
-  runtime.on('request', message => runtime.respond(message.id, { decision: 'allow_once' }));
+test('SDK pre-tool policy defaults to unrestricted allow and ignores request listeners', async () => {
+  const { client, runtime } = makeRuntime({ availableTools: ['builtin:view'] });
+  runtime.on('request', () => assert.fail('pre-tool policy must not prompt by default'));
   try {
     await runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
-    assert.deepEqual(client.permissionResult, { kind: 'approve-once' });
+    assert.deepEqual(client.permissionResult, { permissionDecision: 'allow' });
   } finally { await runtime.close(); }
 });
 
-test('SDK permission policy can approve only the current call and defaults to denial', async () => {
+test('SDK pre-tool policy can approve or deny only the current call', async () => {
   const policy = makeRuntime({ availableTools: ['builtin:view'], permissionPolicy: () => 'allow_once' });
   try {
     await policy.runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
-    assert.deepEqual(policy.client.permissionResult, { kind: 'approve-once' });
+    assert.deepEqual(policy.client.permissionResult, { permissionDecision: 'allow' });
   } finally { await policy.runtime.close(); }
-  const fallback = makeRuntime({ availableTools: ['builtin:view'] });
+  const denied = makeRuntime({ availableTools: ['builtin:view'], permissionPolicy: () => 'reject_once' });
   try {
-    await fallback.runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
-    const refusal = JSON.parse(fallback.client.permissionResult.feedback);
-    assert.equal(fallback.client.permissionResult.kind, 'reject');
+    await denied.runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
+    const refusal = JSON.parse(denied.client.permissionResult.permissionDecisionReason);
+    assert.equal(denied.client.permissionResult.permissionDecision, 'deny');
     assert.equal(refusal.code, 'tool_policy_denied');
     assert.equal(refusal.operation_id, 'engine.tool.filesystem.read');
-  } finally { await fallback.runtime.close(); }
+  } finally { await denied.runtime.close(); }
 });
 
-test('SDK permission policy receives canonical facts and returns its structured refusal', async () => {
+test('SDK pre-tool policy receives complete canonical facts and returns its structured refusal', async () => {
   let received;
   const { client, runtime } = makeRuntime({
     availableTools: ['builtin:view'],
@@ -255,9 +255,10 @@ test('SDK permission policy receives canonical facts and returns its structured 
     assert.deepEqual(received.nativeToolCandidates, ['view']);
     assert.deepEqual(received.facts.paths, ['C:\\work\\file.txt']);
     assert.equal(typeof received.facts.argumentDigest, 'string');
-    assert.deepEqual(JSON.parse(client.permissionResult.feedback), {
+    assert.deepEqual(received.facts.arguments, { path: 'C:\\work\\file.txt' });
+    assert.deepEqual(JSON.parse(client.permissionResult.permissionDecisionReason), {
       code: 'tool_policy_denied',
-      tool_call_id: 'permission-1',
+      tool_call_id: received.id,
       operation_id: 'engine.tool.filesystem.read',
       rule_id: 'workspace-read-denied',
       reason: 'Reading this path is not allowed.',
@@ -265,13 +266,36 @@ test('SDK permission policy receives canonical facts and returns its structured 
   } finally { await runtime.close(); }
 });
 
-test('SDK permission listener times out to a structured denial', async () => {
-  const { client, runtime } = makeRuntime({ availableTools: ['builtin:view'], unhandledRequestTimeoutMs: 5 });
-  runtime.on('request', () => {});
+test('SDK pre-tool policy errors and timeouts fail closed instead of throwing', async () => {
+  const thrown = makeRuntime({
+    availableTools: ['builtin:view'],
+    permissionPolicy: () => { throw new Error('policy broke'); },
+  });
   try {
-    await runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
-    assert.equal(client.permissionResult.kind, 'reject');
-    assert.equal(JSON.parse(client.permissionResult.feedback).code, 'tool_policy_denied');
+    await thrown.runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
+    assert.equal(thrown.client.permissionResult.permissionDecision, 'deny');
+    assert.match(JSON.parse(thrown.client.permissionResult.permissionDecisionReason).reason, /policy broke/);
+  } finally { await thrown.runtime.close(); }
+
+  const timedOut = makeRuntime({
+    availableTools: ['builtin:view'],
+    toolPolicyTimeoutMs: 5,
+    permissionPolicy: () => new Promise(() => {}),
+  });
+  try {
+    await timedOut.runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
+    assert.equal(timedOut.client.permissionResult.permissionDecision, 'deny');
+    assert.match(JSON.parse(timedOut.client.permissionResult.permissionDecisionReason).reason, /timeout/);
+  } finally { await timedOut.runtime.close(); }
+});
+
+test('SDK onPermissionRequest remains a fail-closed backstop', async () => {
+  const { client, runtime } = makeRuntime({ availableTools: ['builtin:view'] });
+  try {
+    await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
+    const result = await client.createdConfig.onPermissionRequest({ toolCallId: 'unexpected-1' });
+    assert.equal(result.kind, 'reject');
+    assert.match(JSON.parse(result.feedback).reason, /outside Floe's pre-tool policy gate/);
   } finally { await runtime.close(); }
 });
 
@@ -289,7 +313,7 @@ test('SDK runtime forces empty client mode', async () => {
   } finally { await runtime.close(); }
 });
 
-test('SDK tool selection rejects wildcards, MCP, unknown built-ins, and persistent defaults', () => {
+test('SDK tool selection is exact and model-aware without vendor agent tools', () => {
   assert.throws(
     () => resolveCopilotToolSelection({ availableTools: ['builtin:*'] }),
     error => error.code === 'copilot_tool_selection_invalid',
@@ -302,52 +326,93 @@ test('SDK tool selection rejects wildcards, MCP, unknown built-ins, and persiste
     () => resolveCopilotToolSelection({ availableTools: ['builtin:sql'] }),
     error => error.code === 'copilot_tool_selection_invalid',
   );
-  assert.throws(
-    () => resolveCopilotToolSelection({ availableTools: ['builtin:create'] }),
-    error => error.code === 'copilot_tool_selection_invalid',
-  );
-  assert.throws(
-    () => resolveCopilotToolSelection({ availableTools: ['builtin:edit'] }),
-    error => error.code === 'copilot_tool_selection_invalid',
-  );
-  assert.throws(
-    () => resolveCopilotToolSelection({ availableTools: ['builtin:apply_patch'] }),
-    error => error.code === 'copilot_tool_selection_invalid',
-  );
-  assert.throws(() => new CopilotRuntime({ defaultPermissionDecision: 'allow_once' }), /reject_once/);
+  assert.deepEqual(copilotToolCatalogForModel('claude-sonnet-5'), [
+    'create', 'edit', 'glob', 'grep', 'list_powershell', 'powershell',
+    'read_powershell', 'stop_powershell', 'view', 'web_fetch',
+  ]);
+  assert.deepEqual(copilotToolCatalogForModel('gpt-5.1-codex'), [
+    'apply_patch', 'glob', 'list_powershell', 'powershell', 'read_powershell',
+    'rg', 'stop_powershell', 'view', 'web_fetch',
+  ]);
+  const defaultWrite = resolveCopilotToolSelection({
+    model: 'claude-sonnet-5',
+    availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch'],
+  });
+  assert.deepEqual(defaultWrite.filters, ['builtin:create', 'builtin:edit']);
+  const codexWrite = resolveCopilotToolSelection({
+    model: 'gpt-5.1-codex',
+    availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch'],
+  });
+  assert.deepEqual(codexWrite.filters, ['builtin:apply_patch']);
+  assert.equal(copilotToolCatalogForModel().includes('task'), false);
+  assert.equal(copilotToolCatalogForModel().includes('skill'), false);
+  assert.throws(() => new CopilotRuntime({ defaultPermissionDecision: 'reject_once' }), /allow_once/);
 });
 
-test('SDK permission normalization produces canonical policy facts without file contents', () => {
+test('SDK pre-tool normalization preserves full shell and write facts', () => {
   const selection = resolveCopilotToolSelection({
-    availableTools: ['builtin:powershell', 'builtin:web_fetch'],
+    availableTools: ['builtin:powershell', 'builtin:create', 'builtin:edit', 'builtin:web_fetch'],
   });
-  const unsupportedWrite = normalizeCopilotPermissionRequest({
-    kind: 'write',
-    toolCallId: 'write-1',
-    fileName: 'C:\\work\\file.txt',
-    diff: '+secret',
-    newFileContents: 'secret',
-    requestSandboxBypass: true,
-  }, { sessionId: 'session-1' }, selection);
-  assert.equal(unsupportedWrite.operationId, null);
-  assert.deepEqual(unsupportedWrite.nativeToolCandidates, []);
-  assert.deepEqual(unsupportedWrite.facts.paths, ['C:\\work\\file.txt']);
-  assert.equal(unsupportedWrite.facts.requestSandboxBypass, true);
-  assert.equal(typeof unsupportedWrite.facts.contentDigest, 'string');
-  assert.equal(JSON.stringify(unsupportedWrite.facts).includes('secret'), false);
-  assert.equal(unsupportedWrite.manifestVersion, COPILOT_TOOL_MANIFEST_VERSION);
+  const created = normalizeCopilotToolCall({
+    toolName: 'create',
+    toolArgs: { path: 'C:\\work\\file.txt', file_text: 'complete content' },
+  }, { sessionId: 'session-1' }, selection, 'call-create');
+  assert.equal(created.operationId, 'engine.tool.filesystem.write');
+  assert.deepEqual(created.facts.paths, ['C:\\work\\file.txt']);
+  assert.equal(created.facts.fileText, 'complete content');
+  assert.deepEqual(created.facts.arguments, { path: 'C:\\work\\file.txt', file_text: 'complete content' });
+  assert.equal(created.manifestVersion, COPILOT_TOOL_MANIFEST_VERSION);
 
-  const shell = normalizeCopilotPermissionRequest({
-    kind: 'shell',
-    fullCommandText: 'npm test',
-    commands: [{ identifier: 'npm', readOnly: false }],
-    commandSegments: [{ identifier: 'npm', fullCommandText: 'npm test' }],
-    possiblePaths: ['C:\\work'],
-    possibleUrls: [{ url: 'https://registry.npmjs.org' }],
-    hasWriteFileRedirection: false,
-  }, { sessionId: 'session-1' }, selection);
+  const edited = normalizeCopilotToolCall({
+    toolName: 'edit',
+    toolArgs: { path: 'C:\\work\\file.txt', old_str: 'before', new_str: 'after' },
+  }, { sessionId: 'session-1' }, selection, 'call-edit');
+  assert.equal(edited.facts.oldText, 'before');
+  assert.equal(edited.facts.newText, 'after');
+
+  const shell = normalizeCopilotToolCall({
+    toolName: 'powershell',
+    toolArgs: { command: 'npm test', description: 'run tests' },
+  }, { sessionId: 'session-1' }, selection, 'call-shell');
   assert.equal(shell.operationId, 'engine.tool.process.execute');
-  assert.deepEqual(shell.facts.urls, ['https://registry.npmjs.org']);
+  assert.equal(shell.facts.fullCommandText, 'npm test');
+  assert.deepEqual(shell.facts.arguments, { command: 'npm test', description: 'run tests' });
+  assert.equal(typeof shell.facts.argumentDigest, 'string');
+});
+
+test('SDK apply_patch normalization parses every path and fails closed on malformed input', () => {
+  const selection = resolveCopilotToolSelection({
+    model: 'gpt-5.1-codex',
+    availableTools: ['builtin:apply_patch'],
+  });
+  const patch = [
+    '*** Begin Patch',
+    '*** Add File: new.txt',
+    '+new content',
+    '*** Update File: old.txt',
+    '*** Move to: moved.txt',
+    '@@',
+    '-before',
+    '+after',
+    '*** Delete File: gone.txt',
+    '*** End Patch',
+  ].join('\n');
+  const normalized = normalizeCopilotToolCall({
+    toolName: 'apply_patch',
+    toolArgs: patch,
+  }, { sessionId: 'session-1' }, selection, 'call-patch');
+  assert.deepEqual(normalized.facts.paths, ['new.txt', 'old.txt', 'moved.txt', 'gone.txt']);
+  assert.equal(normalized.facts.patch, patch);
+  assert.deepEqual(normalized.facts.changes.map(change => change.kind), ['add', 'update', 'delete']);
+  assert.throws(
+    () => normalizeCopilotToolCall(
+      { toolName: 'apply_patch', toolArgs: '*** Begin Patch\nbad\n*** End Patch' },
+      { sessionId: 'session-1' },
+      selection,
+      'call-bad',
+    ),
+    error => error.code === 'copilot_tool_arguments_invalid',
+  );
 });
 
 test('SDK catalog drift fails before a prompt is sent', async () => {
@@ -369,8 +434,8 @@ test('SDK rejects persistent policy decisions instead of widening later calls', 
   });
   try {
     await runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
-    assert.equal(client.permissionResult.kind, 'reject');
-    assert.equal(JSON.parse(client.permissionResult.feedback).code, 'tool_policy_denied');
+    assert.equal(client.permissionResult.permissionDecision, 'deny');
+    assert.equal(JSON.parse(client.permissionResult.permissionDecisionReason).code, 'tool_policy_denied');
   } finally { await runtime.close(); }
 });
 
@@ -404,7 +469,34 @@ test('SDK runtime preserves model listing and selection', async () => {
     const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work', () => {}, { model: 'fixture-model' });
     await runtime.setModel(result.sessionId, 'gpt-5-mini');
     assert.equal(client.sessions.get(result.sessionId).config.model, 'gpt-5-mini');
+    assert.equal(client.optionsUpdates.length, 1);
   } finally { await runtime.close(); }
+});
+
+test('SDK model changes replace the exact tool catalog and its hook together', async () => {
+  const { client, runtime } = makeRuntime({
+    model: 'claude-sonnet-5',
+    availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch', 'builtin:grep', 'builtin:rg'],
+  });
+  try {
+    const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
+    assert.deepEqual(client.sessions.get(result.sessionId).config.availableTools, [
+      'builtin:create', 'builtin:edit', 'builtin:grep',
+    ]);
+    const oldHook = client.sessions.get(result.sessionId).config.hooks.onPreToolUse;
+    await runtime.setModel(result.sessionId, 'gpt-5.1-codex');
+    assert.deepEqual(client.sessions.get(result.sessionId).config.availableTools, [
+      'builtin:apply_patch', 'builtin:rg',
+    ]);
+    assert.notEqual(client.sessions.get(result.sessionId).config.hooks.onPreToolUse, oldHook);
+  } finally { await runtime.close(); }
+});
+
+test('SDK rejects invalid tool-policy timeouts before creating a session', () => {
+  assert.throws(
+    () => makeRuntime({ toolPolicyTimeoutMs: 0 }),
+    /positive finite number/,
+  );
 });
 
 test('SDK resume ignores legacy goal options instead of invoking unsupported goal handling', async () => {

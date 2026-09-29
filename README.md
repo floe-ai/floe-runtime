@@ -75,11 +75,11 @@ runtime.on('activity', event => { /* ... */ });
 
 ## Permission policy
 
-Every permission or approval request (Codex's
-`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
-`item/permissions/requestApproval`, confirmation-shaped `mcpServer/elicitation/request`;
-and Copilot SDK permission callbacks) is normalized into one shape and can be
-answered with one policy function instead of separate backend-specific code:
+Codex permission or approval requests
+(`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
+`item/permissions/requestApproval`, and confirmation-shaped
+`mcpServer/elicitation/request`) are normalized into one shape and can be
+answered with one policy function:
 
 ```js
 const runtime = new CodexRuntime({
@@ -92,13 +92,8 @@ const runtime = new CodexRuntime({
 });
 ```
 
-**Precedence** (highest wins):
-1. An explicit `runtime.on('request', ...)` listener. SDK Copilot listeners
-   receive a `permission/request` message and decide it through
-   `runtime.respond(message.id, { decision:
-   'allow_once'|'reject_once'|'cancel' })`.
-   `respondError()` denies it. An unanswered SDK request is denied after
-   `unhandledRequestTimeoutMs`.
+**Codex precedence** (highest wins):
+1. An explicit `runtime.on('request', ...)` listener.
 2. `permissionPolicy(request)` - called only when no `'request'` listener is
    attached and the request is one floe-runtime recognizes as a permission
    request (`normalizePermissionRequest()` returned non-null). May be async.
@@ -107,9 +102,7 @@ const runtime = new CodexRuntime({
    request's own `options`.
 
 **A turn must never hang forever waiting for a human who isn't there.**
-Deny-by-default was chosen over an implicit-allow-after-timeout because an
-unreviewed auto-allow is unsafe, while an instant deny is always safe and
-deterministic. As a last-resort safety net independent of the above,
+As a last-resort Codex safety net independent of the above,
 `unhandledRequestTimeoutMs` (default 20000ms) auto-declines *any* inbound
 request - even ones `normalizePermissionRequest()` doesn't recognize, or ones
 a caller's own `'request'` listener forgets to answer - by calling
@@ -164,18 +157,32 @@ extensions, host Git operations, and vendor permission state are disabled.
 Model listing and selection use SDK APIs; authentication is owned by the SDK
 runtime.
 
-The pinned Windows runtime currently permits only five governed built-ins:
-`powershell`, `view`, `grep`, `glob`, and `web_fetch`. Each was proven against
-the bundled runtime to reach `onPermissionRequest` before execution. `create`
-and `edit` are excluded because they execute without that callback;
-`apply_patch` is excluded because the initialized runtime does not offer it.
-Catalog changes fail session startup rather than silently widening authority.
+The pinned Windows runtime exposes only work tools. Default/Claude-style
+models receive PowerShell and its read/stop/list companions, `view`, `grep`,
+`glob`, `create`, `edit`, and `web_fetch`. Codex models receive the same work
+surface with `rg` replacing `grep` and `apply_patch` replacing `create` and
+`edit`. Vendor sub-agent tools (`task`, `read_agent`, `list_agents`,
+`write_agent`) and vendor-state tools such as `skill` remain absent. Actors
+delegate through Floe, not a hidden vendor fleet.
 
-Permission policy receives the canonical `operationId`, pinned manifest
-version, native-tool candidates, and normalized policy facts. It may approve
-only the current call. Persistent approvals are rejected, and denials return a
+Every vendor built-in runs through one in-process SDK `onPreToolUse` hook
+before side effects. The hook calls `permissionPolicy` for every call. With no
+policy, the call is allowed: unrestricted engine tools are the default.
+Configured policy may return `allow_once`, `reject_once`, or `cancel`.
+Policy errors, timeouts, malformed arguments, unknown tools, and unsupported
+decisions fail closed. The hook catches every error because SDK hook exceptions
+are otherwise swallowed and execution continues. `onPermissionRequest`
+remains only as a deny-only backstop for an unexpected runtime path.
+
+Policy receives the canonical `operationId`, native tool, generated call ID,
+pinned manifest/catalog, complete native arguments, and normalized facts:
+`paths`, `urls`, the complete PowerShell `fullCommandText`, complete
+`create.fileText`, complete `edit.oldText`/`newText`, or the complete
+`apply_patch.patch` plus parsed file changes. `argumentDigest` identifies the
+exact call. The caller owns safe persistence/redaction. Denials return a
 structured `tool_policy_denied` or `tool_policy_cancelled` payload to the
-model.
+model. Catalog changes fail session startup, and model changes replace and
+revalidate the exact allowlist and hook.
 
 `input.blocks` accepts text, file, directory, selection, blob, and image
 blocks, which are mapped to SDK message options. Other block types, including

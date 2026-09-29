@@ -22,6 +22,13 @@ export class FakeCopilotSession {
           })),
         }),
       },
+      options: {
+        update: async input => {
+          this.config.availableTools = input.availableTools;
+          this.client.optionsUpdates = [...(this.client.optionsUpdates || []), input];
+          return { success: true };
+        },
+      },
     };
   }
 
@@ -47,11 +54,12 @@ export class FakeCopilotSession {
     setTimeout(async () => {
       this.emit('assistant.turn_start', { turnId: 'model-turn-1' });
       if (prompt.includes('[permission]')) {
-        this.client.permissionResult = await this.config.onPermissionRequest({
-          toolCallId: 'permission-1',
-          kind: 'read',
-          path: 'C:\\work\\file.txt',
-          intention: 'read test fixture',
+        this.client.permissionResult = await this.config.hooks.onPreToolUse({
+          sessionId: this.sessionId,
+          toolName: 'view',
+          toolArgs: { path: 'C:\\work\\file.txt' },
+          timestamp: new Date(),
+          workingDirectory: 'C:\\work',
         }, { sessionId: this.sessionId });
       }
       if (prompt.includes('[stream]')) {
@@ -102,6 +110,10 @@ export class FakeCopilotSession {
 
   async setModel(model) {
     this.config.model = model;
+  }
+
+  registerHooks(hooks) {
+    this.config.hooks = hooks;
   }
 
   async disconnect() {

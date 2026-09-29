@@ -15,7 +15,10 @@ export {
   CopilotRuntime,
   CopilotEngineAccountAdapter,
   copilotChildEnvironment,
+  copilotToolCatalogForModel,
+  createCopilotToolHook,
   defineTool,
+  normalizeCopilotToolCall,
   normalizeCopilotPermissionRequest,
   resolveCopilotToolSelection,
 } from './adapters/copilot.mjs';

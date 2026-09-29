@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CopilotClient } from '@github/copilot-sdk';
@@ -9,7 +9,7 @@ import {
   resolveCopilotToolSelection,
 } from '../src/adapters/copilot-tools.mjs';
 
-const BUILT_INS = ['powershell', 'apply_patch', 'view', 'rg', 'glob', 'web_fetch'];
+const BUILT_INS = ['powershell', 'view', 'grep', 'glob', 'web_fetch'];
 
 function isolatedEnvironment() {
   const environment = { ...process.env };
@@ -26,8 +26,7 @@ test('pinned Copilot runtime denies every governed built-in before side effects'
   const profile = join(root, 'profile');
   const workspace = join(root, 'workspace');
   const marker = join(workspace, 'must-not-exist.txt');
-  await writeFile(join(root, 'placeholder'), '');
-  await import('node:fs/promises').then(({ mkdir }) => mkdir(workspace));
+  await mkdir(workspace);
   await writeFile(join(workspace, 'readable.txt'), 'needle');
 
   const requests = [];
@@ -46,7 +45,6 @@ test('pinned Copilot runtime denies every governed built-in before side effects'
   try {
     await client.start();
     const session = await client.createSession({
-      model: 'claude-sonnet-4.5',
       workingDirectory: workspace,
       availableTools: selection.filters,
       excludedTools: [],
@@ -69,20 +67,21 @@ test('pinned Copilot runtime denies every governed built-in before side effects'
 
     const invocations = [
       ['powershell', { command: `Set-Content -LiteralPath '${marker}' -Value denied`, description: 'create denial marker' }],
-      ['apply_patch', { patch: `*** Begin Patch\n*** Add File: ${marker}\n+denied\n*** End Patch\n` }],
       ['view', { path: join(workspace, 'readable.txt') }],
-      ['rg', { pattern: 'needle', paths: workspace }],
-      ['glob', { pattern: '**/*.txt', path: workspace }],
+      ['grep', { pattern: 'needle', paths: workspace }],
+      ['glob', { pattern: '**/*.txt', paths: workspace }],
       ['web_fetch', { url: 'https://example.invalid/floe-denial-proof' }],
     ];
     for (const [name, args] of invocations) {
       const before = requests.length;
-      await session.rpc.tools.execute({ name, arguments: args, toolCallId: `proof-${name}` });
+      const result = await session.rpc.tools.execute({ name, arguments: args, toolCallId: `proof-${name}` });
       assert.equal(requests.length, before + 1, `${name} bypassed onPermissionRequest`);
       assert.equal(requests.at(-1).toolCallId, `proof-${name}`);
+      assert.equal(result.resultType, 'denied', `${name} did not preserve the denial`);
     }
 
     await assert.rejects(access(marker));
+    assert.equal(await readFile(join(workspace, 'readable.txt'), 'utf8'), 'needle');
     await session.disconnect();
   } finally {
     await client.stop();

@@ -110,7 +110,23 @@ test('SDK runtime registers system messages, direct tools, and narrow tool allow
     assert.deepEqual(client.createdConfig.toolSearch, { enabled: false });
     assert.deepEqual(client.createdConfig.mcpServers, {});
     assert.deepEqual(client.createdConfig.includedBuiltinSkills, []);
-    assert.equal(client.sessions.get(result.sessionId).permissionCalls[0][0], 'configure');
+    assert.deepEqual(client.sessions.get(result.sessionId).permissionCalls, [
+      ['configure', {
+        approveAllToolPermissionRequests: false,
+        approveAllReadPermissionRequests: false,
+        rules: { approved: [], denied: [] },
+        paths: {
+          unrestricted: false,
+          additionalDirectories: [],
+          includeTempDirectory: false,
+          workspacePath: 'C:\\work',
+        },
+        urls: { unrestricted: false, initialAllowed: [] },
+      }],
+      ['setApproveAll', { enabled: false }],
+      ['setMode', { mode: 'manual' }],
+      ['resetSessionApprovals', { includeLocation: false }],
+    ]);
   } finally { await runtime.close(); }
 });
 
@@ -221,6 +237,34 @@ test('SDK permission policy can approve only the current call and defaults to de
   } finally { await fallback.runtime.close(); }
 });
 
+test('SDK permission policy receives canonical facts and returns its structured refusal', async () => {
+  let received;
+  const { client, runtime } = makeRuntime({
+    availableTools: ['builtin:view'],
+    permissionPolicy(request) {
+      received = request;
+      return {
+        decision: 'reject_once',
+        refusal: { rule_id: 'workspace-read-denied', reason: 'Reading this path is not allowed.' },
+      };
+    },
+  });
+  try {
+    await runtime.run('worker', { prompt: '[permission]', schema: SCHEMA }, 'C:\\work');
+    assert.equal(received.operationId, 'engine.tool.filesystem.read');
+    assert.deepEqual(received.nativeToolCandidates, ['view']);
+    assert.deepEqual(received.facts.paths, ['C:\\work\\file.txt']);
+    assert.equal(typeof received.facts.argumentDigest, 'string');
+    assert.deepEqual(JSON.parse(client.permissionResult.feedback), {
+      code: 'tool_policy_denied',
+      tool_call_id: 'permission-1',
+      operation_id: 'engine.tool.filesystem.read',
+      rule_id: 'workspace-read-denied',
+      reason: 'Reading this path is not allowed.',
+    });
+  } finally { await runtime.close(); }
+});
+
 test('SDK permission listener times out to a structured denial', async () => {
   const { client, runtime } = makeRuntime({ availableTools: ['builtin:view'], unhandledRequestTimeoutMs: 5 });
   runtime.on('request', () => {});
@@ -258,14 +302,26 @@ test('SDK tool selection rejects wildcards, MCP, unknown built-ins, and persiste
     () => resolveCopilotToolSelection({ availableTools: ['builtin:sql'] }),
     error => error.code === 'copilot_tool_selection_invalid',
   );
+  assert.throws(
+    () => resolveCopilotToolSelection({ availableTools: ['builtin:create'] }),
+    error => error.code === 'copilot_tool_selection_invalid',
+  );
+  assert.throws(
+    () => resolveCopilotToolSelection({ availableTools: ['builtin:edit'] }),
+    error => error.code === 'copilot_tool_selection_invalid',
+  );
+  assert.throws(
+    () => resolveCopilotToolSelection({ availableTools: ['builtin:apply_patch'] }),
+    error => error.code === 'copilot_tool_selection_invalid',
+  );
   assert.throws(() => new CopilotRuntime({ defaultPermissionDecision: 'allow_once' }), /reject_once/);
 });
 
 test('SDK permission normalization produces canonical policy facts without file contents', () => {
   const selection = resolveCopilotToolSelection({
-    availableTools: ['builtin:apply_patch', 'builtin:powershell', 'builtin:web_fetch'],
+    availableTools: ['builtin:powershell', 'builtin:web_fetch'],
   });
-  const write = normalizeCopilotPermissionRequest({
+  const unsupportedWrite = normalizeCopilotPermissionRequest({
     kind: 'write',
     toolCallId: 'write-1',
     fileName: 'C:\\work\\file.txt',
@@ -273,13 +329,13 @@ test('SDK permission normalization produces canonical policy facts without file 
     newFileContents: 'secret',
     requestSandboxBypass: true,
   }, { sessionId: 'session-1' }, selection);
-  assert.equal(write.operationId, 'engine.tool.filesystem.write');
-  assert.deepEqual(write.nativeToolCandidates, ['apply_patch']);
-  assert.deepEqual(write.facts.paths, ['C:\\work\\file.txt']);
-  assert.equal(write.facts.requestSandboxBypass, true);
-  assert.equal(typeof write.facts.contentDigest, 'string');
-  assert.equal(JSON.stringify(write.facts).includes('secret'), false);
-  assert.equal(write.manifestVersion, COPILOT_TOOL_MANIFEST_VERSION);
+  assert.equal(unsupportedWrite.operationId, null);
+  assert.deepEqual(unsupportedWrite.nativeToolCandidates, []);
+  assert.deepEqual(unsupportedWrite.facts.paths, ['C:\\work\\file.txt']);
+  assert.equal(unsupportedWrite.facts.requestSandboxBypass, true);
+  assert.equal(typeof unsupportedWrite.facts.contentDigest, 'string');
+  assert.equal(JSON.stringify(unsupportedWrite.facts).includes('secret'), false);
+  assert.equal(unsupportedWrite.manifestVersion, COPILOT_TOOL_MANIFEST_VERSION);
 
   const shell = normalizeCopilotPermissionRequest({
     kind: 'shell',

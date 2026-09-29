@@ -1,13 +1,12 @@
 import { createHash } from 'node:crypto';
 
-export const COPILOT_TOOL_MANIFEST_VERSION = 'copilot-cli-1.0.83-win32-v1';
+export const COPILOT_TOOL_MANIFEST_VERSION = 'copilot-cli-1.0.83-win32-v2';
 
 export const COPILOT_BUILTIN_TOOL_MANIFEST = Object.freeze({
   win32: Object.freeze({
     powershell: Object.freeze({ operationId: 'engine.tool.process.execute', permissionKind: 'shell' }),
-    apply_patch: Object.freeze({ operationId: 'engine.tool.filesystem.write', permissionKind: 'write' }),
     view: Object.freeze({ operationId: 'engine.tool.filesystem.read', permissionKind: 'read' }),
-    rg: Object.freeze({ operationId: 'engine.tool.filesystem.read', permissionKind: 'read' }),
+    grep: Object.freeze({ operationId: 'engine.tool.filesystem.read', permissionKind: 'read' }),
     glob: Object.freeze({ operationId: 'engine.tool.filesystem.read', permissionKind: 'read' }),
     web_fetch: Object.freeze({ operationId: 'engine.tool.network.fetch', permissionKind: 'url' }),
   }),
@@ -205,13 +204,9 @@ export async function prepareCopilotToolSession(session, selection, workingDirec
   const actual = [...new Set(metadata.tools.map(tool => tool?.name).filter(name => typeof name === 'string'))].sort();
   const expected = [...selection.expectedNames];
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
-    const received = metadata.tools.map(tool => ({
-      name: tool.name,
-      namespacedName: tool.namespacedName || null,
-    }));
     throw fault(
       'copilot_tool_catalog_drift',
-      `Copilot tool catalog drifted from '${selection.manifestVersion}': expected [${expected.join(', ')}], received ${JSON.stringify(received)}.`,
+      `Copilot tool catalog drifted from '${selection.manifestVersion}': expected [${expected.join(', ')}], received [${actual.join(', ')}].`,
     );
   }
   return { manifestVersion: selection.manifestVersion, tools: actual };

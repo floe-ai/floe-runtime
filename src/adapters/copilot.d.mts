@@ -189,6 +189,26 @@ export const COPILOT_BUILTIN_TOOL_MANIFEST: Readonly<Record<string, Readonly<Rec
   permissionKind: string;
 }>>>>>;
 
+export interface CopilotToolSelection {
+  filters: readonly string[];
+  expectedNames: readonly string[];
+  builtins: ReadonlyMap<string, Readonly<{ operationId: string; permissionKind: string }>>;
+  manifestVersion: string;
+}
+
+export function resolveCopilotToolSelection(options?: {
+  tools?: HostTool[];
+  availableTools?: string[];
+  excludedTools?: string[];
+  platform?: NodeJS.Platform;
+}): CopilotToolSelection;
+
+export function normalizeCopilotPermissionRequest(
+  request: Record<string, unknown>,
+  invocation: { sessionId?: string },
+  selection: CopilotToolSelection,
+): CopilotPermissionRequest;
+
 export interface CopilotRuntimeOptions {
   model?: string;
   timeoutMs?: number;

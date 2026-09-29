@@ -2,6 +2,8 @@
  * @invariant CopilotRuntime owns the official SDK boundary. Clients use
  * caller-owned storage without ambient configuration, and every session must
  * match the user OAuth account confirmed by readiness before a turn can run.
+ * A shell active at cancellation can quiesce only through session retirement,
+ * because SDK idle events do not prove that its OS process tree exited.
  */
 import { Runtime } from '../runtime.mjs';
 import { RuntimeFault, check, id } from '../errors.mjs';
@@ -31,6 +33,7 @@ export {
 
 const COMPLETE_FINISH_REASONS = new Set(['stop', 'end_turn', 'completed', 'success']);
 const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;
+const PROCESS_EXECUTION_TOOLS = new Set(['bash', 'powershell']);
 const TOKEN_USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'];
 
 function sdkError(code, message, status = 502, cause) {
@@ -402,19 +405,6 @@ export class CopilotRuntime extends Runtime {
     } else if (event.type === 'session.idle') {
       task.idle = true;
       task.aborted = data.aborted === true;
-      if (task.aborted) {
-        const endedAt = Date.now();
-        // Live SDK aborts omit tool.execution_complete. Aborted session.idle is
-        // the engine's confirmation that those tool processes have stopped.
-        for (const [toolCallId, activity] of task.activities) {
-          this.publish(sessionId, 'activity', {
-            runtime: 'copilot', sessionId, turnId: task.turnId, id: toolCallId, kind: 'tool',
-            status: 'failed', title: activity.title, command: activity.command,
-            startedAt: activity.startedAt, endedAt, raw: event,
-          });
-        }
-        task.activities.clear();
-      }
       this.#finishTask(sessionId, task);
     } else if (event.type === 'model.call_failure') {
       task.modelCallFailure = data;
@@ -474,7 +464,7 @@ export class CopilotRuntime extends Runtime {
     const task = {
       role, schema: input.schema, started: Date.now(), turnId: id('turn'), items: [], text: '',
       finalMessage: null, finishReason: null, usage: null, modelCalls: [], toolCallIds: new Set(), activities: new Map(), resolve: resolveResult,
-      reject: rejectResult, settle, settled, idle: false, abortRequested: false, finished: false,
+      reject: rejectResult, settle, settled, idle: false, abortRequested: false, unverifiedProcessTools: new Set(), finished: false,
       timer: null, lastActivity: Date.now(),
     };
     task.timer = setTimeout(async () => {
@@ -547,6 +537,9 @@ export class CopilotRuntime extends Runtime {
     const task = this.turns.get(sessionId);
     if (!task) return;
     task.abortRequested = true;
+    for (const [toolCallId, activity] of task.activities) {
+      if (PROCESS_EXECUTION_TOOLS.has(activity.title)) task.unverifiedProcessTools.add(toolCallId);
+    }
     await this.sessionObjects.get(sessionId)?.abort();
   }
 
@@ -556,6 +549,12 @@ export class CopilotRuntime extends Runtime {
     await this.interrupt(sessionId);
     try {
       await Promise.race([task.settled, new Promise((_, reject) => setTimeout(() => reject(sdkError('quiescence_unknown', 'Copilot did not emit session.idle after abort.', 409)), this.quiesceTimeoutMs))]);
+      check(
+        task.unverifiedProcessTools.size === 0,
+        'quiescence_unknown',
+        'Copilot stopped the turn but did not prove that the cancelled shell process tree exited. Retire the session before reporting paused.',
+        409,
+      );
     } finally {
       if (!this.turns.has(sessionId)) this.sessions.markStopped(sessionId);
     }

@@ -106,7 +106,7 @@ test('SDK runtime streams text and normalizes direct tool activity', async () =>
   } finally { await runtime.close(); }
 });
 
-test('SDK runtime closes unfinished tool activity when aborted idle confirms it stopped', async () => {
+test('SDK runtime rejects shell quiescence when aborted idle does not prove the process tree exited', async () => {
   const { runtime } = makeRuntime();
   const activity = [];
   let started;
@@ -125,12 +125,13 @@ test('SDK runtime closes unfinished tool activity when aborted idle confirms it 
     );
     await toolStarted;
 
-    await runtime.quiesce(sessionId);
+    await assert.rejects(
+      runtime.quiesce(sessionId),
+      error => error.code === 'quiescence_unknown'
+        && error.message.includes('shell process tree exited'),
+    );
     await assert.rejects(run, error => error.code === 'interrupted');
-    assert.deepEqual(activity.map(event => event.status), ['started', 'failed']);
-    assert.equal(activity[1].id, activity[0].id);
-    assert.equal(activity[1].raw.type, 'session.idle');
-    assert.equal(activity[1].raw.data.aborted, true);
+    assert.deepEqual(activity.map(event => event.status), ['started']);
   } finally { await runtime.close(); }
 });
 

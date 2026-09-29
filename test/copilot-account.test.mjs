@@ -225,13 +225,13 @@ test('Copilot sign-in launches the official CLI hidden and rechecks with a fresh
   assert.deepEqual(progress.map(event => event.status), ['starting', 'waiting_for_person', 'succeeded']);
   assert.equal(
     progress[1].message,
-    "A browser should open for GitHub sign-in. If it doesn't, cancel this sign-in and run the official Copilot CLI sign-in in a terminal, then try again.",
+    "A browser should open for GitHub sign-in. If it doesn't, cancel this sign-in and try again.",
   );
   assert.equal(optionsSeen.length, 2);
   assert.equal(adapter.currentState().phase, 'ready');
 });
 
-test('Copilot device sign-in explains where to find the code without parsing CLI output', async () => {
+test('Copilot device sign-in offers a retry without asking the person to run a command', async () => {
   const child = new FakeLoginProcess();
   const spawnCalls = [];
   const { adapter } = accountAdapter({
@@ -252,7 +252,7 @@ test('Copilot device sign-in explains where to find the code without parsing CLI
   assert.equal(spawnCalls[0][2].stdio, 'inherit');
   assert.equal(
     event.message,
-    "Finish GitHub device sign-in in the terminal running Floe. If you can't see the code, cancel this sign-in and run the official Copilot CLI sign-in in a terminal, then try again.",
+    "Finish GitHub device sign-in with the code shown for this sign-in. If no code is visible, cancel this sign-in and try again.",
   );
   await adapter.cancelSignIn('signin-1');
 });

@@ -106,6 +106,34 @@ test('SDK runtime streams text and normalizes direct tool activity', async () =>
   } finally { await runtime.close(); }
 });
 
+test('SDK runtime closes unfinished tool activity when aborted idle confirms it stopped', async () => {
+  const { runtime } = makeRuntime();
+  const activity = [];
+  let started;
+  const toolStarted = new Promise(resolve => { started = resolve; });
+  runtime.on('activity', event => {
+    activity.push(event);
+    if (event.status === 'started') started(event);
+  });
+  try {
+    let sessionId;
+    const run = runtime.run(
+      'worker',
+      { prompt: '[cancel-tool]' },
+      'C:\\work',
+      id => { sessionId = id; },
+    );
+    await toolStarted;
+
+    await runtime.quiesce(sessionId);
+    await assert.rejects(run, error => error.code === 'interrupted');
+    assert.deepEqual(activity.map(event => event.status), ['started', 'failed']);
+    assert.equal(activity[1].id, activity[0].id);
+    assert.equal(activity[1].raw.type, 'session.idle');
+    assert.equal(activity[1].raw.data.aborted, true);
+  } finally { await runtime.close(); }
+});
+
 test('SDK runtime aggregates every model call and tool call in a turn', async () => {
   const { runtime } = makeRuntime();
   const usageEvents = [];

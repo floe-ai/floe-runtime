@@ -50,6 +50,16 @@ export class FakeCopilotSession {
     this.client.sendOrder.push('send');
     this.client.lastSendOptions = options;
     if (prompt.includes('[send-error]')) throw new Error('model request failed');
+    if (prompt.includes('[cancel-tool]')) {
+      this.emit('assistant.turn_start', { turnId: 'model-turn-cancelled' });
+      this.emit('tool.execution_start', {
+        toolCallId: 'tool-cancelled-1',
+        toolName: 'powershell',
+        arguments: { command: 'Start-Sleep -Seconds 30' },
+      });
+      this.client.pending = this;
+      return 'message-1';
+    }
     if (prompt.includes('[cancel]')) {
       this.client.pending = this;
       return 'message-1';
@@ -108,7 +118,10 @@ export class FakeCopilotSession {
   async abort() {
     this.client.sendOrder.push('abort');
     if (this.client.abortWithoutIdle) return;
-    setTimeout(() => this.emit('session.idle', { aborted: true }), 0);
+    setTimeout(() => {
+      this.emit('abort', { reason: 'user_initiated' });
+      this.emit('session.idle', { aborted: true });
+    }, 0);
   }
 
   async setModel(model) {

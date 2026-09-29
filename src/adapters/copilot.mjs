@@ -402,6 +402,19 @@ export class CopilotRuntime extends Runtime {
     } else if (event.type === 'session.idle') {
       task.idle = true;
       task.aborted = data.aborted === true;
+      if (task.aborted) {
+        const endedAt = Date.now();
+        // Live SDK aborts omit tool.execution_complete. Aborted session.idle is
+        // the engine's confirmation that those tool processes have stopped.
+        for (const [toolCallId, activity] of task.activities) {
+          this.publish(sessionId, 'activity', {
+            runtime: 'copilot', sessionId, turnId: task.turnId, id: toolCallId, kind: 'tool',
+            status: 'failed', title: activity.title, command: activity.command,
+            startedAt: activity.startedAt, endedAt, raw: event,
+          });
+        }
+        task.activities.clear();
+      }
       this.#finishTask(sessionId, task);
     } else if (event.type === 'model.call_failure') {
       task.modelCallFailure = data;

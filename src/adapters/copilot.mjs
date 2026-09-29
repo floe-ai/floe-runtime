@@ -4,8 +4,21 @@ import { SessionRegistry, sessionKey } from '../session-reuse.mjs';
 import { extractStructuredOutput } from '../schema.mjs';
 import { unsupported } from '../capabilities.mjs';
 import { CopilotClient } from '@github/copilot-sdk';
+import {
+  COPILOT_BUILTIN_TOOL_MANIFEST,
+  COPILOT_TOOL_MANIFEST_VERSION,
+  normalizeCopilotPermissionRequest,
+  prepareCopilotToolSession,
+  resolveCopilotToolSelection,
+} from './copilot-tools.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
+export {
+  COPILOT_BUILTIN_TOOL_MANIFEST,
+  COPILOT_TOOL_MANIFEST_VERSION,
+  normalizeCopilotPermissionRequest,
+  resolveCopilotToolSelection,
+} from './copilot-tools.mjs';
 
 const COMPLETE_FINISH_REASONS = new Set(['stop', 'end_turn', 'completed', 'success']);
 const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;
@@ -79,13 +92,16 @@ export class CopilotRuntime extends Runtime {
     defaultPermissionDecision = 'reject_once',
     ...legacyOptions
   } = {}) {
-    super({ command: 'copilot-sdk', unavailableCode: 'copilot_unavailable', permissionPolicy, defaultPermissionDecision, ...legacyOptions });
+    super({ command: 'copilot-sdk', unavailableCode: 'copilot_unavailable', permissionPolicy, defaultPermissionDecision: 'reject_once', ...legacyOptions });
+    if (defaultPermissionDecision !== 'reject_once') {
+      throw new TypeError('Copilot permissions are evaluated per call; defaultPermissionDecision must be reject_once.');
+    }
     this.model = model;
     this.timeoutMs = timeoutMs;
     this.quiesceTimeoutMs = quiesceTimeoutMs;
     this.client = client;
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
-    this.clientOptions = clientOptions;
+    this.clientOptions = { ...clientOptions, mode: 'empty' };
     this.systemMessage = systemMessage;
     this.tools = tools.map(normalizeTool);
     this.availableTools = availableTools;
@@ -131,79 +147,126 @@ export class CopilotRuntime extends Runtime {
     return (models || []).map(model => ({ ...model, modelId: model.modelId || model.id }));
   }
 
-  #permissionResult(decision) {
+  #permissionResult(outcome, request) {
+    const decision = typeof outcome === 'string' ? outcome : outcome?.decision;
     if (decision === 'allow_once') return { kind: 'approve-once' };
-    if (decision === 'allow_always') return { kind: 'approve-for-session' };
-    return { kind: 'reject', feedback: decision === 'cancel' ? 'Floe cancelled this operation.' : 'Floe denied this operation.' };
+    const supplied = typeof outcome === 'object' && outcome?.refusal ? outcome.refusal : {};
+    const refusal = {
+      code: decision === 'cancel' ? 'tool_policy_cancelled' : 'tool_policy_denied',
+      tool_call_id: request?.id || null,
+      operation_id: request?.operationId || null,
+      rule_id: supplied.rule_id || null,
+      reason: supplied.reason || (decision === 'cancel' ? 'Floe cancelled this operation.' : 'Floe denied this operation.'),
+    };
+    return { kind: 'reject', feedback: JSON.stringify(refusal) };
   }
 
   #manualPermission(request, normalized) {
     return new Promise(resolve => {
       const timer = setTimeout(() => {
         this.pendingPermissions.delete(normalized.id);
-        resolve(this.#permissionResult('reject_once'));
+        resolve(this.#permissionResult('reject_once', normalized));
       }, this.unhandledRequestTimeoutMs);
       timer.unref?.();
-      this.pendingPermissions.set(normalized.id, { resolve, timer });
+      this.pendingPermissions.set(normalized.id, {
+        resolve: outcome => resolve(this.#permissionResult(outcome, normalized)),
+        timer,
+      });
       this.emit('request', { id: normalized.id, method: 'permission/request', params: normalized, raw: request });
     });
   }
 
-  #permissionHandler() {
+  #permissionHandler(selection) {
     return async (request, invocation = {}) => {
-      const normalized = {
-        runtime: 'copilot', sessionId: invocation.sessionId || '', id: request.toolCallId || id('permission'),
-        title: request.toolName || request.kind || 'Permission requested',
-        kind: request.kind || 'tool', options: [
-          { id: 'approve', decision: 'allow_once', label: 'Allow once' },
-          { id: 'reject', decision: 'reject_once', label: 'Reject' },
-        ], raw: request,
-      };
+      const normalized = normalizeCopilotPermissionRequest(request, invocation, selection);
+      if (!normalized.id) normalized.id = id('permission');
+      if (!normalized.operationId || normalized.nativeToolCandidates.length === 0) {
+        return this.#permissionResult({
+          decision: 'reject_once',
+          refusal: { reason: `Copilot permission kind '${normalized.kind}' is not covered by the active tool manifest.` },
+        }, normalized);
+      }
       if (this.listenerCount('request') > 0) return this.#manualPermission(request, normalized);
-      let decision = this.defaultPermissionDecision;
+      let decision = 'reject_once';
       if (this.permissionPolicy) {
         try { decision = await this.permissionPolicy(normalized); }
-        catch (error) { this.emit('diagnostic', `permissionPolicy threw; falling back to the default decision: ${error.message}`); }
+        catch (error) { this.emit('diagnostic', `permissionPolicy threw; denying the tool call: ${error.message}`); }
       }
-      return this.#permissionResult(decision);
+      if ((typeof decision === 'string' ? decision : decision?.decision) === 'allow_always') {
+        this.emit('diagnostic', 'Copilot policy attempted a persistent approval; the tool call was denied.');
+        decision = 'reject_once';
+      }
+      return this.#permissionResult(decision, normalized);
     };
   }
 
   #sessionConfig(cwd, model, settings = {}, sessionId) {
     const systemMessage = settings.systemMessage || this.systemMessage;
+    const tools = [...this.tools, ...(settings.tools || [])].map(normalizeTool);
+    const selection = resolveCopilotToolSelection({
+      tools,
+      availableTools: settings.availableTools ?? this.availableTools,
+      excludedTools: settings.excludedTools ?? this.excludedTools,
+    });
     const config = {
       ...(sessionId ? { sessionId } : {}),
       model: model || undefined,
       workingDirectory: cwd,
       streaming: true,
-      tools: [...this.tools, ...(settings.tools || [])].map(normalizeTool),
-      availableTools: settings.availableTools ?? this.availableTools,
-      excludedTools: settings.excludedTools ?? this.excludedTools,
-      onPermissionRequest: this.#permissionHandler(),
+      tools,
+      availableTools: selection.filters,
+      excludedTools: [],
+      onPermissionRequest: this.#permissionHandler(selection),
+      enableConfigDiscovery: false,
+      enableFileHooks: false,
+      enableHostGitOperations: false,
+      enableSessionStore: false,
+      enableSkills: false,
+      includedBuiltinSkills: [],
+      toolSearch: { enabled: false },
+      memory: { enabled: false },
+      mcpServers: {},
+      requestExtensions: false,
     };
     if (systemMessage) config.systemMessage = typeof systemMessage === 'string'
       ? { mode: 'append', content: systemMessage }
       : systemMessage;
-    return config;
+    return { config, selection };
+  }
+
+  async #prepareSession(session, cwd, selection) {
+    try {
+      return await prepareCopilotToolSession(session, selection, cwd);
+    } catch (error) {
+      try { await session.disconnect(); } catch {}
+      throw sdkError(error.code || 'copilot_tool_catalog_unavailable', error.message, 503, error);
+    }
   }
 
   async #getSession(cwd, model, settings, continuation) {
     if (continuation.sessionId && this.sessionObjects.has(continuation.sessionId)) {
       const session = this.sessionObjects.get(continuation.sessionId);
+      const { selection } = this.#sessionConfig(cwd, model, settings, continuation.sessionId);
+      await this.#prepareSession(session, cwd, selection);
       this.sessions.get(continuation.sessionId).stopped = true;
       return { session, sessionId: continuation.sessionId, reused: true, reason: 'Continuing the same session.' };
     }
     if (continuation.sessionId && continuation.resumable !== false) {
       try {
-        const session = await this.client.resumeSession(continuation.sessionId, this.#sessionConfig(cwd, model, settings, continuation.sessionId));
+        const { config, selection } = this.#sessionConfig(cwd, model, settings, continuation.sessionId);
+        const session = await this.client.resumeSession(continuation.sessionId, config);
+        await this.#prepareSession(session, cwd, selection);
         this.sessionObjects.set(session.sessionId, session);
         this.sessions.set(session.sessionId, { key: null, result: { sessionId: session.sessionId } });
         return { session, sessionId: session.sessionId, reused: true, reason: 'Resumed persisted session.' };
       } catch (error) {
+        if (String(error?.code || '').startsWith('copilot_tool_') || error?.code === 'copilot_permission_mode_unsafe') throw error;
         this.emit('diagnostic', `Could not resume session ${continuation.sessionId}: ${error.message}`);
       }
     }
-    const session = await this.client.createSession(this.#sessionConfig(cwd, model, settings));
+    const { config, selection } = this.#sessionConfig(cwd, model, settings);
+    const session = await this.client.createSession(config);
+    await this.#prepareSession(session, cwd, selection);
     this.sessionObjects.set(session.sessionId, session);
     return { session, sessionId: session.sessionId, reused: false, reason: continuation.sessionId ? 'The prior session was unavailable.' : 'A fresh session was requested.' };
   }
@@ -368,7 +431,7 @@ export class CopilotRuntime extends Runtime {
     this.pendingPermissions.delete(String(requestId));
     clearTimeout(pending.timer);
     const selected = result?.outcome?.optionId || result?.decision || result;
-    pending.resolve(this.#permissionResult(selected === 'allow' ? 'allow_once' : selected === 'reject' ? 'reject_once' : selected));
+    pending.resolve(selected === 'allow' ? 'allow_once' : selected === 'reject' ? 'reject_once' : result);
   }
 
   respondError(requestId, message, code) {
@@ -376,7 +439,7 @@ export class CopilotRuntime extends Runtime {
     if (!pending) return super.respondError(requestId, message, code);
     this.pendingPermissions.delete(String(requestId));
     clearTimeout(pending.timer);
-    pending.resolve(this.#permissionResult('reject_once'));
+    pending.resolve({ decision: 'reject_once', refusal: { reason: message || 'Floe could not approve this operation.' } });
   }
 
   async interrupt(sessionId) {
@@ -409,7 +472,9 @@ export class CopilotRuntime extends Runtime {
 
   async resume(sessionId, cwd) {
     await this.start();
-    const session = await this.client.resumeSession(sessionId, this.#sessionConfig(cwd, this.model, {}, sessionId));
+    const { config, selection } = this.#sessionConfig(cwd, this.model, {}, sessionId);
+    const session = await this.client.resumeSession(sessionId, config);
+    await this.#prepareSession(session, cwd, selection);
     this.sessionObjects.set(sessionId, session);
     this.sessions.set(sessionId, { key: null, result: { sessionId } });
     return sessionId;

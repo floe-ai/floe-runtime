@@ -2,10 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  COPILOT_BUILTIN_TOOL_MANIFEST,
+  COPILOT_TOOL_MANIFEST_VERSION,
   CopilotEngineAccountAdapter,
   CopilotRuntime,
   copilotChildEnvironment,
   defineTool,
+  normalizeCopilotPermissionRequest,
+  resolveCopilotToolSelection,
 } from 'floe-runtime/adapters/copilot';
 
 test('Copilot package entry point exports its runtime, account adapter, and helpers', () => {
@@ -13,6 +17,10 @@ test('Copilot package entry point exports its runtime, account adapter, and help
   assert.equal(typeof CopilotEngineAccountAdapter, 'function');
   assert.equal(typeof copilotChildEnvironment, 'function');
   assert.equal(typeof defineTool, 'function');
+  assert.equal(typeof COPILOT_TOOL_MANIFEST_VERSION, 'string');
+  assert.equal(typeof COPILOT_BUILTIN_TOOL_MANIFEST, 'object');
+  assert.equal(typeof normalizeCopilotPermissionRequest, 'function');
+  assert.equal(typeof resolveCopilotToolSelection, 'function');
 });
 
 test('Copilot SDK declarations and README match the unsupported command contract', async () => {

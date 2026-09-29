@@ -96,7 +96,7 @@ const runtime = new CodexRuntime({
 1. An explicit `runtime.on('request', ...)` listener. SDK Copilot listeners
    receive a `permission/request` message and decide it through
    `runtime.respond(message.id, { decision:
-   'allow_once'|'allow_always'|'reject_once'|'reject_always'|'cancel' })`.
+   'allow_once'|'reject_once'|'cancel' })`.
    `respondError()` denies it. An unanswered SDK request is denied after
    `unhandledRequestTimeoutMs`.
 2. `permissionPolicy(request)` - called only when no `'request'` listener is
@@ -158,9 +158,24 @@ missing idle raises `quiescence_unknown`.
 `session.error`, model-call failures, missing final messages, aborted turns,
 and incomplete structured output are reported as distinct failures.
 `systemMessage` uses the SDK append/customize form so SDK guardrails remain
-active. `tools`, `availableTools`, and `excludedTools` configure host-owned
-tools. Model listing and selection use SDK APIs; authentication is owned by
-the SDK runtime.
+active. Every session uses SDK `mode: "empty"` with an exact `availableTools`
+allowlist. File hooks, config discovery, tool search, skills, memory, MCP,
+extensions, host Git operations, and vendor permission state are disabled.
+Model listing and selection use SDK APIs; authentication is owned by the SDK
+runtime.
+
+The pinned Windows runtime currently permits only five governed built-ins:
+`powershell`, `view`, `grep`, `glob`, and `web_fetch`. Each was proven against
+the bundled runtime to reach `onPermissionRequest` before execution. `create`
+and `edit` are excluded because they execute without that callback;
+`apply_patch` is excluded because the initialized runtime does not offer it.
+Catalog changes fail session startup rather than silently widening authority.
+
+Permission policy receives the canonical `operationId`, pinned manifest
+version, native-tool candidates, and normalized policy facts. It may approve
+only the current call. Persistent approvals are rejected, and denials return a
+structured `tool_policy_denied` or `tool_policy_cancelled` payload to the
+model.
 
 `input.blocks` accepts text, file, directory, selection, blob, and image
 blocks, which are mapped to SDK message options. Other block types, including

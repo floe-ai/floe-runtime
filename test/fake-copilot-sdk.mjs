@@ -5,6 +5,24 @@ export class FakeCopilotSession {
     this.client = client;
     this.handlers = new Set();
     this.aborted = false;
+    this.permissionCalls = [];
+    this.rpc = {
+      permissions: {
+        configure: async input => { this.permissionCalls.push(['configure', input]); return { success: true }; },
+        setApproveAll: async input => { this.permissionCalls.push(['setApproveAll', input]); return { success: true }; },
+        setMode: async input => { this.permissionCalls.push(['setMode', input]); return { success: true, mode: input.mode }; },
+        resetSessionApprovals: async input => { this.permissionCalls.push(['resetSessionApprovals', input]); return { success: true }; },
+      },
+      tools: {
+        initializeAndValidate: async () => ({ success: true }),
+        getCurrentMetadata: async () => ({
+          tools: (client.catalogOverride || config.availableTools).map(filter => ({
+            name: filter.includes(':') ? filter.slice(filter.indexOf(':') + 1) : filter,
+            description: '',
+          })),
+        }),
+      },
+    };
   }
 
   on(handler) {
@@ -29,7 +47,12 @@ export class FakeCopilotSession {
     setTimeout(async () => {
       this.emit('assistant.turn_start', { turnId: 'model-turn-1' });
       if (prompt.includes('[permission]')) {
-        this.client.permissionResult = await this.config.onPermissionRequest({ toolCallId: 'permission-1', toolName: 'lookup', kind: 'custom-tool' }, { sessionId: this.sessionId });
+        this.client.permissionResult = await this.config.onPermissionRequest({
+          toolCallId: 'permission-1',
+          kind: 'read',
+          path: 'C:\\work\\file.txt',
+          intention: 'read test fixture',
+        }, { sessionId: this.sessionId });
       }
       if (prompt.includes('[stream]')) {
         this.emit('assistant.message_delta', { messageId: 'message-1', deltaContent: '{"ok":' });

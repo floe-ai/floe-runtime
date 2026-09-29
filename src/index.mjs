@@ -9,6 +9,14 @@ export { PERMISSION_DECISIONS, pickOption } from './permissions.mjs';
 export { FEATURES, unsupported } from './capabilities.mjs';
 export { EventLog, watchEvents } from './events.mjs';
 export { CodexRuntime } from './adapters/codex.mjs';
-export { CopilotRuntime } from './adapters/copilot.mjs';
-export { CopilotEngineAccountAdapter, copilotChildEnvironment, defineTool } from './adapters/copilot.mjs';
+export {
+  COPILOT_BUILTIN_TOOL_MANIFEST,
+  COPILOT_TOOL_MANIFEST_VERSION,
+  CopilotRuntime,
+  CopilotEngineAccountAdapter,
+  copilotChildEnvironment,
+  defineTool,
+  normalizeCopilotPermissionRequest,
+  resolveCopilotToolSelection,
+} from './adapters/copilot.mjs';
 export { Fleet } from './fleet.mjs';

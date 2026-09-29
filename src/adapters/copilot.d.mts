@@ -155,10 +155,39 @@ export interface PermissionRequest {
 
 export type PermissionDecision =
   | 'allow_once'
-  | 'allow_always'
   | 'reject_once'
-  | 'reject_always'
   | 'cancel';
+
+export interface ToolPolicyRefusal {
+  code?: 'tool_policy_denied' | 'tool_policy_cancelled';
+  rule_id?: string | null;
+  reason: string;
+}
+
+export type PermissionPolicyDecision =
+  | PermissionDecision
+  | { decision: PermissionDecision; refusal?: ToolPolicyRefusal };
+
+export interface CopilotToolPolicyFacts {
+  paths: string[];
+  urls: string[];
+  requestSandboxBypass: boolean;
+  argumentDigest: string;
+  [key: string]: unknown;
+}
+
+export interface CopilotPermissionRequest extends PermissionRequest {
+  operationId: string | null;
+  nativeToolCandidates: string[];
+  manifestVersion: string;
+  facts: CopilotToolPolicyFacts;
+}
+
+export const COPILOT_TOOL_MANIFEST_VERSION: string;
+export const COPILOT_BUILTIN_TOOL_MANIFEST: Readonly<Record<string, Readonly<Record<string, Readonly<{
+  operationId: string;
+  permissionKind: string;
+}>>>>>;
 
 export interface CopilotRuntimeOptions {
   model?: string;
@@ -171,8 +200,8 @@ export interface CopilotRuntimeOptions {
   tools?: HostTool[];
   availableTools?: string[];
   excludedTools?: string[];
-  permissionPolicy?: (request: PermissionRequest) => PermissionDecision | Promise<PermissionDecision>;
-  defaultPermissionDecision?: PermissionDecision;
+  permissionPolicy?: (request: CopilotPermissionRequest) => PermissionPolicyDecision | Promise<PermissionPolicyDecision>;
+  defaultPermissionDecision?: 'reject_once';
   unhandledRequestTimeoutMs?: number;
 }
 

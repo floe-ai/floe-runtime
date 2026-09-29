@@ -36,6 +36,36 @@ test('SDK runtime streams text and normalizes direct tool activity', async () =>
   } finally { await runtime.close(); }
 });
 
+test('SDK runtime aggregates every model call and tool call in a turn', async () => {
+  const { runtime } = makeRuntime();
+  const usageEvents = [];
+  runtime.on('usage', event => usageEvents.push(event));
+  try {
+    const result = await runtime.run('worker', { prompt: '[multi-usage]', schema: SCHEMA }, 'C:\\work');
+    assert.equal(result.usage.inputTokens, 450);
+    assert.equal(result.usage.outputTokens, 100);
+    assert.equal(result.usage.cacheReadTokens, 100);
+    assert.equal(result.usage.cacheWriteTokens, 12);
+    assert.equal(result.usage.numModelCalls, 3);
+    assert.equal(result.usage.numToolCalls, 2);
+    assert.deepEqual(result.usage.modelCalls.map(call => ({
+      apiCallId: call.apiCallId,
+      inputTokens: call.inputTokens,
+      outputTokens: call.outputTokens,
+      cacheReadTokens: call.cacheReadTokens,
+      cacheWriteTokens: call.cacheWriteTokens,
+    })), [
+      { apiCallId: 'call-1', inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 5 },
+      { apiCallId: 'call-2', inputTokens: 150, outputTokens: 30, cacheReadTokens: 60, cacheWriteTokens: undefined },
+      { apiCallId: 'call-3', inputTokens: 200, outputTokens: 50, cacheReadTokens: undefined, cacheWriteTokens: 7 },
+    ]);
+    assert.equal(usageEvents.length, 3);
+    assert.equal(usageEvents.at(-1).numModelCalls, 3);
+    assert.equal(usageEvents.at(-1).numToolCalls, 2);
+    assert.equal(usageEvents.at(-1).inputTokens, 450);
+  } finally { await runtime.close(); }
+});
+
 test('SDK runtime awaits asynchronous setup before sending and preserves setup cancellation', async () => {
   const { client, runtime } = makeRuntime();
   let releaseSetup;

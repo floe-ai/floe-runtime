@@ -35,6 +35,24 @@ export class FakeCopilotSession {
         this.emit('assistant.message_delta', { messageId: 'message-1', deltaContent: '{"ok":' });
         this.emit('assistant.message_delta', { messageId: 'message-1', deltaContent: 'true,"summary":"streamed"}' });
       }
+      if (prompt.includes('[multi-usage]')) {
+        this.emit('assistant.usage', {
+          apiCallId: 'call-1', model: 'fixture-model', inputTokens: 100, outputTokens: 20,
+          cacheReadTokens: 40, cacheWriteTokens: 5, numToolCalls: 0,
+        });
+        this.emit('tool.execution_start', { toolCallId: 'tool-usage-1', toolName: 'request', arguments: { question: 'First?' } });
+        this.emit('tool.execution_complete', { toolCallId: 'tool-usage-1', toolName: 'request', success: true, result: 'first' });
+        this.emit('assistant.usage', {
+          apiCallId: 'call-2', model: 'fixture-model', inputTokens: 150, outputTokens: 30,
+          cacheReadTokens: 60, numToolCalls: 0,
+        });
+        this.emit('tool.execution_start', { toolCallId: 'tool-usage-2', toolName: 'list_pulses', arguments: {} });
+        this.emit('tool.execution_complete', { toolCallId: 'tool-usage-2', toolName: 'list_pulses', success: true, result: [] });
+        this.emit('assistant.usage', {
+          apiCallId: 'call-3', model: 'fixture-model', inputTokens: 200, outputTokens: 50,
+          cacheWriteTokens: 7, numToolCalls: 0,
+        });
+      }
       if (prompt.includes('[tool]')) {
         this.emit('tool.execution_start', { toolCallId: 'tool-1', toolName: 'lookup', arguments: { id: '1' } });
         this.emit('tool.execution_complete', { toolCallId: 'tool-1', toolName: 'lookup', success: true, result: 'found' });

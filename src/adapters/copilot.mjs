@@ -8,6 +8,7 @@ export { defineTool } from '@github/copilot-sdk';
 
 const COMPLETE_FINISH_REASONS = new Set(['stop', 'end_turn', 'completed', 'success']);
 const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;
+const TOKEN_USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'];
 
 function sdkError(code, message, status = 502, cause) {
   const error = new RuntimeFault(code, message, status);
@@ -20,6 +21,21 @@ function normalizeTool(tool) {
     throw new TypeError('Copilot host tools require a name and handler.');
   }
   return { ...tool };
+}
+
+function aggregateUsage(modelCalls, numToolCalls) {
+  if (modelCalls.length === 0) return null;
+  const latest = modelCalls.at(-1);
+  const usage = {
+    ...latest,
+    numModelCalls: modelCalls.length,
+    numToolCalls,
+    modelCalls: modelCalls.map(call => ({ ...call })),
+  };
+  for (const field of TOKEN_USAGE_FIELDS) {
+    usage[field] = modelCalls.reduce((total, call) => total + (Number.isFinite(call[field]) ? call[field] : 0), 0);
+  }
+  return usage;
 }
 
 function promptOptions(input) {
@@ -211,10 +227,13 @@ export class CopilotRuntime extends Runtime {
     } else if (event.type === 'assistant.reasoning_delta') {
       this.#publishStream(sessionId, task, 'reasoning', data.deltaContent || '', event);
     } else if (event.type === 'assistant.usage') {
-      task.usage = data;
-      this.publish(sessionId, 'usage', { runtime: 'copilot', sessionId, ...data });
+      task.modelCalls.push({ ...data });
+      task.usage = aggregateUsage(task.modelCalls, task.toolCallIds.size);
+      this.publish(sessionId, 'usage', { runtime: 'copilot', sessionId, ...task.usage });
     } else if (event.type === 'tool.execution_start') {
       task.items.push(data);
+      task.toolCallIds.add(data.toolCallId);
+      if (task.usage) task.usage = aggregateUsage(task.modelCalls, task.toolCallIds.size);
       task.activities.set(data.toolCallId, { title: data.toolName || data.toolCallId, startedAt: Date.now(), command: null });
       this.publish(sessionId, 'activity', {
         runtime: 'copilot', sessionId, turnId: task.turnId, id: data.toolCallId, kind: 'tool',
@@ -252,6 +271,7 @@ export class CopilotRuntime extends Runtime {
     this.turns.delete(sessionId);
     this.sessions.markStopped(sessionId);
     task.unsubscribe?.();
+    if (task.usage) task.usage = aggregateUsage(task.modelCalls, task.toolCallIds.size);
     const finish = task.finishReason;
     let error = null;
     if (task.aborted) error = sdkError('interrupted', 'Turn was cancelled.', 409);
@@ -292,7 +312,7 @@ export class CopilotRuntime extends Runtime {
     const settled = new Promise(resolve => { settle = resolve; });
     const task = {
       role, schema: input.schema, started: Date.now(), turnId: id('turn'), items: [], text: '',
-      finalMessage: null, finishReason: null, usage: null, activities: new Map(), resolve: resolveResult,
+      finalMessage: null, finishReason: null, usage: null, modelCalls: [], toolCallIds: new Set(), activities: new Map(), resolve: resolveResult,
       reject: rejectResult, settle, settled, idle: false, abortRequested: false, finished: false,
       timer: null, lastActivity: Date.now(),
     };

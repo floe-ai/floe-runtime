@@ -80,9 +80,13 @@ system:
           paths:
             - src/adapters/copilot.mjs
             - src/adapters/copilot.d.mts
+            - src/adapters/copilot-account.mjs
+            - src/adapters/copilot-tools.mjs
+            - test/copilot-account.test.mjs
             - test/copilot-sdk.test.mjs
             - test/fake-copilot-sdk.mjs
             - test-smoke/copilot-sdk.smoke.test.mjs
+            - test-smoke/copilot-tool-gate.smoke.test.mjs
           writeAuthority:
             allowedModules: []
           modules:
@@ -92,6 +96,10 @@ system:
               paths:
                 - src/adapters/copilot.mjs
                 - src/adapters/copilot.d.mts
+                - src/adapters/copilot-account.mjs
+                - src/adapters/copilot-tools.mjs
+                - test/copilot-account.test.mjs
                 - test/copilot-sdk.test.mjs
                 - test/fake-copilot-sdk.mjs
                 - test-smoke/copilot-sdk.smoke.test.mjs
+                - test-smoke/copilot-tool-gate.smoke.test.mjs

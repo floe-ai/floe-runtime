@@ -29,6 +29,9 @@ export class FakeCopilotSession {
           return { success: true };
         },
       },
+      gitHubAuth: {
+        getStatus: async () => ({ ...client.authStatus }),
+      },
     };
   }
 
@@ -124,6 +127,12 @@ export class FakeCopilotSession {
 export class FakeCopilotClient {
   constructor(options = {}) {
     this.options = options;
+    this.authStatus = {
+      isAuthenticated: true,
+      authType: 'user',
+      login: 'octocat',
+      host: 'https://github.com',
+    };
     this.sessions = new Map();
     this.nextId = 1;
     this.sendOrder = [];

@@ -30,6 +30,7 @@ const runtime = new CodexRuntime({ model: 'gpt-5-codex', timeoutMs: 20 * 60 * 10
 // Copilot requires a caller-owned session location:
 // const runtime = new CopilotRuntime({
 //   clientOptions: { baseDirectory: '/path/to/floe-owned/copilot-session' },
+//   expectedAccount: { label: readiness.account.label, host: readiness.account.host },
 // });
 
 await runtime.start();                 // starts the selected backend
@@ -155,12 +156,18 @@ missing idle raises `quiescence_unknown`.
 `session.error`, model-call failures, missing final messages, aborted turns,
 and incomplete structured output are reported as distinct failures.
 `systemMessage` uses the SDK append/customize form so SDK guardrails remain
-active. Every session uses SDK `mode: "empty"` with an exact `availableTools`
-allowlist. File hooks, config discovery, tool search, skills, memory, MCP,
-extensions, host Git operations, and vendor permission state are disabled.
-Construction requires either `clientOptions.baseDirectory` or
-`clientOptions.sessionFs`; an invalid runtime is rejected immediately instead
-of failing when its first turn starts.
+active. The client uses normal SDK mode so the OS credential store remains
+available, while every optional capability previously disabled by empty mode
+is disabled explicitly. Sessions use an exact `availableTools` allowlist.
+File hooks, config and instruction discovery, tool search, skills, memory,
+MCP, extensions, host Git operations, and vendor permission state are disabled.
+The SDK-managed `environment_context` system-message section is removed.
+Construction requires a Floe-owned `clientOptions.baseDirectory`; an invalid
+runtime is rejected immediately instead of failing when its first turn starts.
+It also requires `expectedAccount` from the readiness result. Before a session
+can run, its SDK auth status must be a matching `user` OAuth login and host.
+GitHub CLI, environment, token, API-key, signed-out, and different-account
+sessions are refused without fallback.
 Model listing and selection use SDK APIs; authentication is owned by the SDK
 runtime.
 
@@ -201,7 +208,8 @@ reachability, authentication, and entitlement. Its `signIn()` and
 `cancelSignIn()` methods drive an explicitly supplied, packaged official
 Copilot CLI through `copilot login`; OAuth credentials remain in GitHub's
 credential store. SDK and login children never receive
-`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the parent process.
+`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or
+`COPILOT_DISABLE_KEYTAR` from the parent process.
 On Windows the login child is hidden instead of opening a second console.
 Its output remains inherited for terminal users, but Floe does not parse that
 vendor-owned text as a protocol. The pushed waiting state explains that a
@@ -431,6 +439,7 @@ const fleet = new Fleet({
   backends: {
     copilot: () => new CopilotRuntime({
       clientOptions: { baseDirectory: '/path/to/floe-owned/copilot-session' },
+      expectedAccount: { label: readiness.account.label, host: readiness.account.host },
     }),
     codex: () => new CodexRuntime({}),
   },

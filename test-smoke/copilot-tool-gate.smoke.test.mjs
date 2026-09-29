@@ -13,7 +13,7 @@ import {
 function isolatedEnvironment() {
   const environment = { ...process.env };
   for (const key of Object.keys(environment)) {
-    if (['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'].includes(key.toUpperCase())) {
+    if (['COPILOT_GITHUB_TOKEN', 'COPILOT_DISABLE_KEYTAR', 'GH_TOKEN', 'GITHUB_TOKEN'].includes(key.toUpperCase())) {
       delete environment[key];
     }
   }
@@ -30,17 +30,35 @@ async function sessionFor(client, workspace, model, selection, hook, permissionR
     workingDirectory: workspace,
     availableTools: selection.filters,
     excludedTools: [],
+    enableExperimentalMode: false,
+    enableSessionTelemetry: false,
     enableConfigDiscovery: false,
+    skipCustomInstructions: true,
+    customAgentsLocalOnly: true,
+    customAgents: [],
+    coauthorEnabled: false,
+    manageScheduleEnabled: false,
+    mcpOAuthTokenStorage: 'in-memory',
     enableFileHooks: false,
     enableHostGitOperations: false,
     enableSessionStore: false,
     enableSkills: false,
     includedBuiltinSkills: [],
+    skillDirectories: [],
+    instructionDirectories: [],
+    pluginDirectories: [],
+    skipEmbeddingRetrieval: true,
+    embeddingCacheStorage: 'in-memory',
+    enableOnDemandInstructionDiscovery: false,
     excludedBuiltinAgents: [],
     toolSearch: { enabled: false },
     memory: { enabled: false },
     mcpServers: {},
     requestExtensions: false,
+    systemMessage: {
+      mode: 'customize',
+      sections: { environment_context: { action: 'remove' } },
+    },
     hooks: { onPreToolUse: hook },
     onPermissionRequest(request) {
       permissionRequests.push(request);
@@ -53,23 +71,50 @@ async function sessionFor(client, workspace, model, selection, hook, permissionR
 
 test('pinned Copilot runtime gates every exposed work tool before side effects', { timeout: 120_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'floe-copilot-tools-'));
-  const profile = join(root, 'profile');
+  const profile = join(root, 'floe-profile');
+  const operatorHome = join(root, 'operator-home');
+  const operatorCopilotHome = join(operatorHome, '.copilot');
   const workspace = join(root, 'workspace');
   const readable = join(workspace, 'readable.txt');
-  await mkdir(workspace);
+  const plantedMarker = 'FLOE_OPERATOR_CONFIGURATION_MUST_NOT_LOAD';
+  const plantedHookMarker = join(workspace, 'operator-hook-must-not-run.txt');
+  await mkdir(join(operatorCopilotHome, 'hooks'), { recursive: true });
+  await mkdir(join(operatorCopilotHome, 'skills', 'operator-skill'), { recursive: true });
+  await mkdir(workspace, { recursive: true });
   await writeFile(readable, 'original');
+  await writeFile(join(operatorCopilotHome, 'copilot-instructions.md'), plantedMarker);
+  await writeFile(join(operatorCopilotHome, 'settings.json'), JSON.stringify({
+    enableFileHooks: true,
+    enableSkills: true,
+  }));
+  await writeFile(join(operatorCopilotHome, 'skills', 'operator-skill', 'SKILL.md'), `# operator-skill\n${plantedMarker}`);
+  await writeFile(join(operatorCopilotHome, 'hooks', 'operator.json'), JSON.stringify({
+    version: 1,
+    hooks: {
+      preToolUse: [{
+        type: 'command',
+        powershell: `Set-Content -LiteralPath '${plantedHookMarker}' -Value '${plantedMarker}'`,
+      }],
+    },
+  }));
 
   const client = new CopilotClient({
-    mode: 'empty',
+    mode: 'copilot-cli',
     baseDirectory: profile,
     workingDirectory: workspace,
     useLoggedInUser: false,
-    env: isolatedEnvironment(),
+    env: { ...isolatedEnvironment(), HOME: operatorHome, USERPROFILE: operatorHome },
     logLevel: 'error',
   });
 
   try {
     await client.start();
+    const discoveredInstructions = await client.rpc.instructions.discover({ projectPaths: [workspace] });
+    const discoveredHooks = await client.rpc.hooks.discover({ projectPaths: [workspace] });
+    const discoveredSkills = await client.rpc.skills.discover({ projectPaths: [workspace] });
+    assert.doesNotMatch(JSON.stringify(discoveredInstructions), new RegExp(plantedMarker));
+    assert.doesNotMatch(JSON.stringify(discoveredHooks), /operator\.json/i);
+    assert.doesNotMatch(JSON.stringify(discoveredSkills), /operator-skill/i);
     for (const scenario of [
       {
         model: 'claude-sonnet-5',
@@ -100,6 +145,12 @@ test('pinned Copilot runtime gates every exposed work tool before side effects',
         },
       });
       const session = await sessionFor(client, workspace, scenario.model, selection, hook, requests);
+      const contextAttribution = await session.rpc.metadata.getContextAttribution();
+      const skills = await session.rpc.skills.list();
+      assert.doesNotMatch(JSON.stringify(contextAttribution), new RegExp(plantedMarker));
+      assert.doesNotMatch(JSON.stringify(contextAttribution), /copilot-instructions\.md/i);
+      assert.doesNotMatch(JSON.stringify(skills), /operator-skill/i);
+      await missing(plantedHookMarker);
       const invocations = {
         powershell: { command: `Set-Content -LiteralPath '${marker}' -Value bypass`, description: 'denial marker' },
         read_powershell: { shellId: 'missing-proof-shell', delay: 0 },
@@ -126,6 +177,7 @@ test('pinned Copilot runtime gates every exposed work tool before side effects',
       assert.deepEqual(seen.map(request => request.title), scenario.names);
       assert.equal(requests.length, 0, 'a governed call escaped to onPermissionRequest');
       await missing(marker);
+      await missing(plantedHookMarker);
       assert.equal(await readFile(readable, 'utf8'), 'original');
       await session.disconnect();
     }
@@ -143,7 +195,7 @@ test('pinned Copilot hook errors fail closed and unrestricted default allows', {
   const allowedMarker = join(workspace, 'allowed.txt');
   await mkdir(workspace);
   const client = new CopilotClient({
-    mode: 'empty',
+    mode: 'copilot-cli',
     baseDirectory: profile,
     workingDirectory: workspace,
     useLoggedInUser: false,

@@ -23,6 +23,7 @@ function makeRuntime(options = {}) {
     runtime: new CopilotRuntime({
       client,
       clientOptions: { baseDirectory: 'C:\\floe-session' },
+      expectedAccount: { label: 'octocat', host: 'https://github.com' },
       timeoutMs: 100,
       quiesceTimeoutMs: 25,
       ...options,
@@ -30,12 +31,28 @@ function makeRuntime(options = {}) {
   };
 }
 
-test('SDK runtime refuses construction without a session location', () => {
+test('SDK runtime refuses construction without a Floe-owned baseDirectory', () => {
+  for (const clientOptions of [{}, { sessionFs: {} }]) {
+    assert.throws(
+      () => new CopilotRuntime({
+        clientFactory: () => new FakeCopilotClient(),
+        clientOptions,
+        expectedAccount: { label: 'octocat' },
+      }),
+      {
+        name: 'TypeError',
+        message: 'CopilotRuntime requires clientOptions.baseDirectory for Floe-owned Copilot state.',
+      },
+    );
+  }
+});
+
+test('SDK runtime requires the account confirmed by readiness', () => {
   assert.throws(
-    () => new CopilotRuntime({ clientFactory: () => new FakeCopilotClient() }),
+    () => new CopilotRuntime({ clientOptions: { baseDirectory: 'C:\\floe-session' } }),
     {
       name: 'TypeError',
-      message: 'CopilotRuntime requires clientOptions.baseDirectory or clientOptions.sessionFs.',
+      message: 'CopilotRuntime requires expectedAccount.label from Copilot readiness.',
     },
   );
 });
@@ -44,6 +61,7 @@ test('public runtime construction with baseDirectory completes a fake SDK turn',
   let client;
   const runtime = new PublicCopilotRuntime({
     clientOptions: { baseDirectory: 'C:\\floe-owned\\copilot-session' },
+    expectedAccount: { label: 'octocat', host: 'https://github.com/' },
     clientFactory: options => {
       client = new FakeCopilotClient(options);
       return client;
@@ -55,7 +73,8 @@ test('public runtime construction with baseDirectory completes a fake SDK turn',
     const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
     assert.deepEqual(result.report, { ok: true, summary: 'done' });
     assert.equal(client.options.baseDirectory, 'C:\\floe-owned\\copilot-session');
-    assert.equal(client.options.mode, 'empty');
+    assert.equal(client.options.mode, 'copilot-cli');
+    assert.equal(client.options.useLoggedInUser, true);
   } finally {
     await runtime.close();
   }
@@ -143,12 +162,33 @@ test('SDK runtime registers system messages, direct tools, and narrow tool allow
   });
   try {
     const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
-    assert.equal(client.createdConfig.systemMessage.content, 'Floe guardrails');
+    assert.deepEqual(client.createdConfig.systemMessage, {
+      mode: 'customize',
+      content: 'Floe guardrails',
+      sections: { environment_context: { action: 'remove' } },
+    });
     assert.equal(client.createdConfig.tools[0].name, 'lookup');
     assert.deepEqual(client.createdConfig.availableTools, ['custom:lookup', 'builtin:view']);
     assert.deepEqual(client.createdConfig.excludedTools, []);
     assert.equal(client.createdConfig.enableFileHooks, false);
     assert.equal(client.createdConfig.enableConfigDiscovery, false);
+    assert.equal(client.createdConfig.enableExperimentalMode, false);
+    assert.equal(client.createdConfig.enableSessionTelemetry, false);
+    assert.equal(client.createdConfig.skipCustomInstructions, true);
+    assert.equal(client.createdConfig.customAgentsLocalOnly, true);
+    assert.deepEqual(client.createdConfig.customAgents, []);
+    assert.equal(client.createdConfig.coauthorEnabled, false);
+    assert.equal(client.createdConfig.manageScheduleEnabled, false);
+    assert.equal(client.createdConfig.mcpOAuthTokenStorage, 'in-memory');
+    assert.equal(client.createdConfig.skipEmbeddingRetrieval, true);
+    assert.equal(client.createdConfig.embeddingCacheStorage, 'in-memory');
+    assert.equal(client.createdConfig.enableOnDemandInstructionDiscovery, false);
+    assert.equal(client.createdConfig.enableHostGitOperations, false);
+    assert.equal(client.createdConfig.enableSessionStore, false);
+    assert.equal(client.createdConfig.enableSkills, false);
+    assert.deepEqual(client.createdConfig.skillDirectories, []);
+    assert.deepEqual(client.createdConfig.instructionDirectories, []);
+    assert.deepEqual(client.createdConfig.pluginDirectories, []);
     assert.equal(typeof client.createdConfig.hooks.onPreToolUse, 'function');
     assert.equal(typeof client.createdConfig.onPermissionRequest, 'function');
     assert.deepEqual(client.createdConfig.toolSearch, { enabled: false });
@@ -340,18 +380,75 @@ test('SDK onPermissionRequest remains a fail-closed backstop', async () => {
   } finally { await runtime.close(); }
 });
 
-test('SDK runtime forces empty client mode', async () => {
+test('SDK runtime uses normal mode with only the readiness user login available', async () => {
   let options;
   const client = new FakeCopilotClient();
   const runtime = new CopilotRuntime({
     clientFactory: received => { options = received; return client; },
-    clientOptions: { mode: 'copilot-cli', baseDirectory: 'C:\\floe-session' },
+    clientOptions: {
+      mode: 'empty',
+      baseDirectory: 'C:\\floe-session',
+      gitHubToken: 'must-not-pass',
+      env: { GH_TOKEN: 'must-not-pass', COPILOT_DISABLE_KEYTAR: '1', FLOE_SAFE: 'kept' },
+    },
+    expectedAccount: { label: 'octocat' },
     timeoutMs: 100,
   });
   try {
     await runtime.start();
-    assert.equal(options.mode, 'empty');
+    assert.equal(options.mode, 'copilot-cli');
+    assert.equal(options.useLoggedInUser, true);
+    assert.equal(options.gitHubToken, undefined);
+    assert.equal(options.env.GH_TOKEN, undefined);
+    assert.equal(options.env.COPILOT_DISABLE_KEYTAR, undefined);
+    assert.equal(options.env.FLOE_SAFE, 'kept');
   } finally { await runtime.close(); }
+});
+
+test('SDK runtime refuses a session that falls back from the readiness account', async () => {
+  for (const [authStatus, message] of [
+    [{ isAuthenticated: false }, /not authenticated as the readiness account 'octocat'/],
+    [{ isAuthenticated: true, authType: 'gh-cli', login: 'wrong' }, /gh-cli.*readiness OAuth account 'octocat'/],
+    [{ isAuthenticated: true, authType: 'env', login: 'wrong' }, /env.*readiness OAuth account 'octocat'/],
+    [{ isAuthenticated: true, authType: 'token', login: 'wrong' }, /token.*readiness OAuth account 'octocat'/],
+    [{ isAuthenticated: true, authType: 'api-key', login: 'wrong' }, /api-key.*readiness OAuth account 'octocat'/],
+    [{ isAuthenticated: true, authType: 'user', login: 'wrong' }, /authenticated as 'wrong'.*readiness account 'octocat'/],
+    [{ isAuthenticated: true, authType: 'user', login: 'octocat', host: 'https://example.com' }, /instead of readiness host/],
+  ]) {
+    const { client, runtime } = makeRuntime();
+    client.authStatus = authStatus;
+    try {
+      await assert.rejects(
+        runtime.run('worker', { prompt: 'must not send', schema: SCHEMA }, 'C:\\work'),
+        error => error.code === 'copilot_account_mismatch' && message.test(error.message),
+      );
+      assert.equal(client.sendOrder.includes('send'), false);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
+test('SDK runtime rechecks the account before reusing a session', async () => {
+  const { client, runtime } = makeRuntime();
+  try {
+    const first = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
+    client.authStatus = { isAuthenticated: true, authType: 'gh-cli', login: 'octocat' };
+    await assert.rejects(
+      runtime.run(
+        'worker',
+        { prompt: 'must not send', schema: SCHEMA },
+        'C:\\work',
+        () => {},
+        {},
+        { sessionId: first.sessionId },
+      ),
+      error => error.code === 'copilot_account_mismatch' && /gh-cli/.test(error.message),
+    );
+    assert.equal(client.sendOrder.filter(entry => entry === 'send').length, 1);
+  } finally {
+    await runtime.close();
+  }
 });
 
 test('SDK tool selection is exact and model-aware without vendor agent tools', () => {
@@ -389,6 +486,7 @@ test('SDK tool selection is exact and model-aware without vendor agent tools', (
   assert.equal(copilotToolCatalogForModel().includes('skill'), false);
   assert.throws(() => new CopilotRuntime({
     clientOptions: { baseDirectory: 'C:\\floe-session' },
+    expectedAccount: { label: 'octocat' },
     defaultPermissionDecision: 'reject_once',
   }), /allow_once/);
 });

@@ -2,6 +2,13 @@
 
 **Date:** 2026-09-15
 
+> **2026-09-30 correction:** Floe must not use SDK `mode: "empty"` for
+> machine-user authentication. The pinned runtime sets
+> `COPILOT_DISABLE_KEYTAR=1` in that mode, which prevents a turn from using the
+> OS-stored OAuth login checked by readiness and permits fallback to a different
+> GitHub CLI account. Floe now uses normal mode with explicit isolation controls
+> and verifies each session against the readiness account before sending.
+
 ## Recommendation
 
 Treat the official Copilot SDK as the intended replacement for Floe's Copilot
@@ -119,8 +126,10 @@ user and listed models even when no `copilot` executable was available on
   authentication. That is vendor-supported, but it changes ADR-0013 and the
   security boundary. It must be an explicit product decision, not a hidden
   implementation detail.
-- Shared or server deployments should use per-session tokens and the SDK's
-  documented `mode: "empty"` isolation rather than one ambient personal login.
+- Shared or server deployments need an explicit authentication design. Floe's
+  machine-user path uses normal mode, caller-owned `baseDirectory`, explicit
+  isolation controls, and session-level identity verification. Per-session
+  tokens remain a separate product decision.
 
 ## Bring your own key
 

@@ -1,5 +1,5 @@
-// @invariant CopilotRuntime construction requires a caller-owned SDK session
-// location through clientOptions.baseDirectory or clientOptions.sessionFs.
+// @invariant CopilotRuntime requires caller-owned SDK session storage and the
+// readiness-confirmed user OAuth identity before any session can run.
 //
 // Hand-authored type declarations for the CopilotRuntime adapter.
 //
@@ -251,10 +251,15 @@ export function createCopilotToolHook(options: {
   invocation?: { sessionId?: string },
 ) => Promise<CopilotPreToolHookOutput>;
 
-export type CopilotClientSessionOptions = Record<string, unknown> & (
-  | { baseDirectory: string; sessionFs?: unknown }
-  | { baseDirectory?: string; sessionFs: unknown }
-);
+export type CopilotClientSessionOptions = Record<string, unknown> & {
+  baseDirectory: string;
+  sessionFs?: unknown;
+};
+
+export interface ExpectedCopilotAccount {
+  label: string;
+  host?: string;
+}
 
 export type CopilotRuntimeOptions = {
   model?: string;
@@ -263,6 +268,7 @@ export type CopilotRuntimeOptions = {
   client?: unknown;
   clientFactory?: (options: Record<string, unknown>) => unknown;
   clientOptions: CopilotClientSessionOptions;
+  expectedAccount: ExpectedCopilotAccount;
   systemMessage?: SystemMessageConfig | string;
   tools?: HostTool[];
   availableTools?: string[];

@@ -1,3 +1,8 @@
+/**
+ * @invariant Copilot readiness accepts only the vendor-managed user OAuth
+ * identity; ambient process credentials and keytar-disabling overrides never
+ * reach the SDK child.
+ */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -6,6 +11,7 @@ import { RuntimeFault } from '../errors.mjs';
 
 const CREDENTIAL_ENVIRONMENT_KEYS = new Set([
   'COPILOT_GITHUB_TOKEN',
+  'COPILOT_DISABLE_KEYTAR',
   'GH_TOKEN',
   'GITHUB_TOKEN',
 ]);
@@ -292,6 +298,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
     return {
       ...options,
       ...(safeConnection ? { connection: safeConnection } : {}),
+      mode: 'copilot-cli',
       env: environment,
       useLoggedInUser: true,
     };

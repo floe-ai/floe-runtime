@@ -9,6 +9,7 @@ import {
 const PARENT_ENVIRONMENT = {
   PATH: 'C:\\tools',
   COPILOT_GITHUB_TOKEN: 'copilot-secret',
+  copilot_disable_keytar: '1',
   gh_token: 'gh-secret',
   GITHUB_TOKEN: 'github-secret',
   SAFE_VALUE: 'kept',
@@ -121,8 +122,10 @@ test('Copilot account check reports ready and strips parent credentials from the
   assert.equal(optionsSeen[0].env.GH_TOKEN, undefined);
   assert.equal(optionsSeen[0].env.gh_token, undefined);
   assert.equal(optionsSeen[0].env.GITHUB_TOKEN, undefined);
+  assert.equal(optionsSeen[0].env.copilot_disable_keytar, undefined);
   assert.equal(optionsSeen[0].gitHubToken, undefined);
   assert.equal(optionsSeen[0].useLoggedInUser, true);
+  assert.equal(optionsSeen[0].mode, 'copilot-cli');
 });
 
 test('Copilot account check distinguishes signed out, entitlement, policy, and reachability', async t => {

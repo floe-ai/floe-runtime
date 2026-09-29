@@ -1,6 +1,7 @@
 /**
- * @invariant CopilotRuntime owns the official SDK boundary. Empty-mode clients
- * must have a caller-owned session location before construction succeeds.
+ * @invariant CopilotRuntime owns the official SDK boundary. Clients use
+ * caller-owned storage without ambient configuration, and every session must
+ * match the user OAuth account confirmed by readiness before a turn can run.
  */
 import { Runtime } from '../runtime.mjs';
 import { RuntimeFault, check, id } from '../errors.mjs';
@@ -15,6 +16,7 @@ import {
   prepareCopilotToolSession,
   resolveCopilotToolSelection,
 } from './copilot-tools.mjs';
+import { copilotChildEnvironment } from './copilot-account.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
 export {
@@ -42,6 +44,52 @@ function normalizeTool(tool) {
     throw new TypeError('Copilot host tools require a name and handler.');
   }
   return { ...tool };
+}
+
+function normalizeExpectedAccount(account) {
+  if (!account || typeof account.label !== 'string' || account.label.trim().length === 0) {
+    throw new TypeError('CopilotRuntime requires expectedAccount.label from Copilot readiness.');
+  }
+  return {
+    label: account.label.trim(),
+    ...(typeof account.host === 'string' && account.host.trim() ? { host: account.host.trim() } : {}),
+  };
+}
+
+function normalizedHost(host) {
+  return typeof host === 'string' ? host.trim().replace(/\/+$/, '').toLowerCase() : '';
+}
+
+function isolatedClientOptions(clientOptions) {
+  const { gitHubToken: _ignoredToken, env: optionEnvironment, ...options } = clientOptions;
+  return {
+    ...options,
+    mode: 'copilot-cli',
+    useLoggedInUser: true,
+    env: copilotChildEnvironment({ ...process.env, ...optionEnvironment }),
+  };
+}
+
+function isolatedSystemMessage(systemMessage) {
+  if (!systemMessage) {
+    return { mode: 'customize', sections: { environment_context: { action: 'remove' } } };
+  }
+  if (typeof systemMessage === 'string') {
+    return {
+      mode: 'customize',
+      content: systemMessage,
+      sections: { environment_context: { action: 'remove' } },
+    };
+  }
+  if (systemMessage.mode === 'replace') return systemMessage;
+  return {
+    ...systemMessage,
+    mode: 'customize',
+    sections: {
+      ...systemMessage.sections,
+      environment_context: { action: 'remove' },
+    },
+  };
 }
 
 function aggregateUsage(modelCalls, numToolCalls) {
@@ -91,6 +139,7 @@ export class CopilotRuntime extends Runtime {
     client,
     clientFactory,
     clientOptions = {},
+    expectedAccount,
     systemMessage,
     tools = [],
     availableTools,
@@ -102,10 +151,10 @@ export class CopilotRuntime extends Runtime {
   } = {}) {
     super({ command: 'copilot-sdk', unavailableCode: 'copilot_unavailable', permissionPolicy, defaultPermissionDecision, ...legacyOptions });
     const hasBaseDirectory = typeof clientOptions.baseDirectory === 'string' && clientOptions.baseDirectory.trim().length > 0;
-    const hasSessionFs = clientOptions.sessionFs !== undefined && clientOptions.sessionFs !== null;
-    if (!hasBaseDirectory && !hasSessionFs) {
-      throw new TypeError('CopilotRuntime requires clientOptions.baseDirectory or clientOptions.sessionFs.');
+    if (!hasBaseDirectory) {
+      throw new TypeError('CopilotRuntime requires clientOptions.baseDirectory for Floe-owned Copilot state.');
     }
+    this.expectedAccount = normalizeExpectedAccount(expectedAccount);
     if (defaultPermissionDecision !== 'allow_once') {
       throw new TypeError('Copilot allows engine tools unless a configured policy restricts them; defaultPermissionDecision must be allow_once.');
     }
@@ -117,7 +166,7 @@ export class CopilotRuntime extends Runtime {
     this.quiesceTimeoutMs = quiesceTimeoutMs;
     this.client = client;
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
-    this.clientOptions = { ...clientOptions, mode: 'empty' };
+    this.clientOptions = isolatedClientOptions(clientOptions);
     this.systemMessage = systemMessage;
     this.tools = tools.map(normalizeTool);
     this.availableTools = availableTools;
@@ -206,28 +255,66 @@ export class CopilotRuntime extends Runtime {
       excludedTools: [],
       hooks: { onPreToolUse: this.#toolHook(selection) },
       onPermissionRequest: request => this.#permissionBackstop(request),
+      enableExperimentalMode: false,
+      enableSessionTelemetry: false,
       enableConfigDiscovery: false,
+      skipCustomInstructions: true,
+      customAgentsLocalOnly: true,
+      customAgents: [],
+      coauthorEnabled: false,
+      manageScheduleEnabled: false,
+      mcpOAuthTokenStorage: 'in-memory',
       enableFileHooks: false,
       enableHostGitOperations: false,
       enableSessionStore: false,
       enableSkills: false,
       includedBuiltinSkills: [],
+      skillDirectories: [],
+      instructionDirectories: [],
+      pluginDirectories: [],
+      skipEmbeddingRetrieval: true,
+      embeddingCacheStorage: 'in-memory',
+      enableOnDemandInstructionDiscovery: false,
       toolSearch: { enabled: false },
       memory: { enabled: false },
       mcpServers: {},
       requestExtensions: false,
+      systemMessage: isolatedSystemMessage(systemMessage),
     };
-    if (systemMessage) config.systemMessage = typeof systemMessage === 'string'
-      ? { mode: 'append', content: systemMessage }
-      : systemMessage;
     return { config, selection };
+  }
+
+  async #assertSessionAccount(session) {
+    let auth;
+    try {
+      auth = await session.rpc?.gitHubAuth?.getStatus();
+    } catch (error) {
+      throw sdkError('copilot_auth_unverified', `Copilot could not verify the session account: ${error.message}`, 503, error);
+    }
+    if (!auth?.isAuthenticated) {
+      throw sdkError('copilot_account_mismatch', `Copilot session is not authenticated as the readiness account '${this.expectedAccount.label}'.`, 409);
+    }
+    if (auth.authType !== 'user') {
+      throw sdkError('copilot_account_mismatch', `Copilot session selected '${auth.authType || 'unknown'}' authentication instead of the readiness OAuth account '${this.expectedAccount.label}'.`, 409);
+    }
+    if (typeof auth.login !== 'string' || auth.login.toLowerCase() !== this.expectedAccount.label.toLowerCase()) {
+      throw sdkError('copilot_account_mismatch', `Copilot session authenticated as '${auth.login || 'unknown'}' instead of readiness account '${this.expectedAccount.label}'.`, 409);
+    }
+    if (this.expectedAccount.host && normalizedHost(auth.host) !== normalizedHost(this.expectedAccount.host)) {
+      throw sdkError('copilot_account_mismatch', `Copilot session authenticated against '${auth.host || 'unknown'}' instead of readiness host '${this.expectedAccount.host}'.`, 409);
+    }
   }
 
   async #prepareSession(session, cwd, selection) {
     try {
+      await this.#assertSessionAccount(session);
       return await prepareCopilotToolSession(session, selection, cwd);
     } catch (error) {
       try { await session.disconnect(); } catch {}
+      this.sessionObjects.delete(session.sessionId);
+      this.sessionContexts.delete(session.sessionId);
+      this.sessions.delete(session.sessionId);
+      if (error instanceof RuntimeFault) throw error;
       throw sdkError(error.code || 'copilot_tool_catalog_unavailable', error.message, 503, error);
     }
   }
@@ -251,7 +338,12 @@ export class CopilotRuntime extends Runtime {
         this.sessions.set(session.sessionId, { key: null, result: { sessionId: session.sessionId } });
         return { session, sessionId: session.sessionId, reused: true, reason: 'Resumed persisted session.' };
       } catch (error) {
-        if (String(error?.code || '').startsWith('copilot_tool_') || error?.code === 'copilot_permission_mode_unsafe') throw error;
+        if (
+          String(error?.code || '').startsWith('copilot_tool_')
+          || String(error?.code || '').startsWith('copilot_account_')
+          || error?.code === 'copilot_auth_unverified'
+          || error?.code === 'copilot_permission_mode_unsafe'
+        ) throw error;
         this.emit('diagnostic', `Could not resume session ${continuation.sessionId}: ${error.message}`);
       }
     }

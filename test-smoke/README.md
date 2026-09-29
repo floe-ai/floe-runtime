@@ -1,11 +1,21 @@
 # Smoke tests (real binaries, real cost)
 
-These tests are the ONLY tests in this repository that spawn the real
-`codex`/`copilot` CLIs. Everything under `test/` runs against the fakes in
+These tests are the ONLY tests in this repository that spawn real
+`codex`/`copilot` runtimes. Everything under `test/` runs against the fakes in
 `test/fake-codex.mjs`/`test/fake-copilot.mjs` and never touches a real
-process or a real account - that suite is fast, hermetic and free. This one
-is neither: it costs real API credits and takes real wall-clock time
-(process spawns, real model turns, a real SIGKILL + resume cycle).
+process or account.
+
+The pinned Copilot tool gate is provider-free: it runs the bundled native
+runtime without a login, invokes tools directly, and never makes a model
+request. CI runs it on Windows and Linux:
+
+```
+npm run test:native-gates
+```
+
+The remaining smoke tests use real accounts and model turns. They cost API
+credits and take real wall-clock time (process spawns, model turns, and a real
+SIGKILL + resume cycle).
 
 Run it explicitly, never as part of `npm test`:
 
@@ -13,7 +23,7 @@ Run it explicitly, never as part of `npm test`:
 npm run smoke
 ```
 
-Each test probes for the binary/authentication it needs FIRST and skips
+Each authenticated test probes for the binary/authentication it needs FIRST and skips
 cleanly (with an explicit reason printed by `node --test`) if it is
 unavailable, rather than failing the suite. You should expect to see:
 

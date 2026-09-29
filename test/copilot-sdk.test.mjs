@@ -15,6 +15,10 @@ const SCHEMA = {
   properties: { ok: { type: 'boolean' }, summary: { type: 'string' } },
   required: ['ok', 'summary'],
 };
+const SHELL_TOOL = process.platform === 'win32' ? 'powershell' : 'bash';
+const READ_SHELL_TOOL = `read_${SHELL_TOOL}`;
+const STOP_SHELL_TOOL = `stop_${SHELL_TOOL}`;
+const LIST_SHELL_TOOL = `list_${SHELL_TOOL}`;
 
 function makeRuntime(options = {}) {
   const client = new FakeCopilotClient();
@@ -465,13 +469,13 @@ test('SDK tool selection is exact and model-aware without vendor agent tools', (
     error => error.code === 'copilot_tool_selection_invalid',
   );
   assert.deepEqual(copilotToolCatalogForModel('claude-sonnet-5'), [
-    'create', 'edit', 'glob', 'grep', 'list_powershell', 'powershell',
-    'read_powershell', 'stop_powershell', 'view', 'web_fetch',
-  ]);
+    'create', 'edit', 'glob', 'grep', LIST_SHELL_TOOL, SHELL_TOOL,
+    READ_SHELL_TOOL, STOP_SHELL_TOOL, 'view', 'web_fetch',
+  ].sort());
   assert.deepEqual(copilotToolCatalogForModel('gpt-5.1-codex'), [
-    'apply_patch', 'glob', 'list_powershell', 'powershell', 'read_powershell',
-    'rg', 'stop_powershell', 'view', 'web_fetch',
-  ]);
+    'apply_patch', 'glob', LIST_SHELL_TOOL, SHELL_TOOL, READ_SHELL_TOOL,
+    'rg', STOP_SHELL_TOOL, 'view', 'web_fetch',
+  ].sort());
   const defaultWrite = resolveCopilotToolSelection({
     model: 'claude-sonnet-5',
     availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch'],
@@ -493,7 +497,7 @@ test('SDK tool selection is exact and model-aware without vendor agent tools', (
 
 test('SDK pre-tool normalization preserves full shell and write facts', () => {
   const selection = resolveCopilotToolSelection({
-    availableTools: ['builtin:powershell', 'builtin:create', 'builtin:edit', 'builtin:web_fetch'],
+    availableTools: [`builtin:${SHELL_TOOL}`, 'builtin:create', 'builtin:edit', 'builtin:web_fetch'],
   });
   const created = normalizeCopilotToolCall({
     toolName: 'create',
@@ -513,7 +517,7 @@ test('SDK pre-tool normalization preserves full shell and write facts', () => {
   assert.equal(edited.facts.newText, 'after');
 
   const shell = normalizeCopilotToolCall({
-    toolName: 'powershell',
+    toolName: SHELL_TOOL,
     toolArgs: { command: 'npm test', description: 'run tests' },
   }, { sessionId: 'session-1' }, selection, 'call-shell');
   assert.equal(shell.operationId, 'engine.tool.process.execute');

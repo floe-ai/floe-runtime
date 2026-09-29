@@ -7,6 +7,7 @@ import {
   normalizeCopilotToolCall,
   resolveCopilotToolSelection,
 } from '../src/adapters/copilot.mjs';
+import { CopilotRuntime as PublicCopilotRuntime } from 'floe-runtime/adapters/copilot';
 import { FakeCopilotClient } from './fake-copilot-sdk.mjs';
 
 const SCHEMA = {
@@ -17,8 +18,48 @@ const SCHEMA = {
 
 function makeRuntime(options = {}) {
   const client = new FakeCopilotClient();
-  return { client, runtime: new CopilotRuntime({ client, timeoutMs: 100, quiesceTimeoutMs: 25, ...options }) };
+  return {
+    client,
+    runtime: new CopilotRuntime({
+      client,
+      clientOptions: { baseDirectory: 'C:\\floe-session' },
+      timeoutMs: 100,
+      quiesceTimeoutMs: 25,
+      ...options,
+    }),
+  };
 }
+
+test('SDK runtime refuses construction without a session location', () => {
+  assert.throws(
+    () => new CopilotRuntime({ clientFactory: () => new FakeCopilotClient() }),
+    {
+      name: 'TypeError',
+      message: 'CopilotRuntime requires clientOptions.baseDirectory or clientOptions.sessionFs.',
+    },
+  );
+});
+
+test('public runtime construction with baseDirectory completes a fake SDK turn', async () => {
+  let client;
+  const runtime = new PublicCopilotRuntime({
+    clientOptions: { baseDirectory: 'C:\\floe-owned\\copilot-session' },
+    clientFactory: options => {
+      client = new FakeCopilotClient(options);
+      return client;
+    },
+    timeoutMs: 100,
+    quiesceTimeoutMs: 25,
+  });
+  try {
+    const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
+    assert.deepEqual(result.report, { ok: true, summary: 'done' });
+    assert.equal(client.options.baseDirectory, 'C:\\floe-owned\\copilot-session');
+    assert.equal(client.options.mode, 'empty');
+  } finally {
+    await runtime.close();
+  }
+});
 
 test('SDK runtime completes a turn only at session.idle and supports multiple model turns', async () => {
   const { runtime } = makeRuntime();
@@ -304,7 +345,7 @@ test('SDK runtime forces empty client mode', async () => {
   const client = new FakeCopilotClient();
   const runtime = new CopilotRuntime({
     clientFactory: received => { options = received; return client; },
-    clientOptions: { mode: 'copilot-cli' },
+    clientOptions: { mode: 'copilot-cli', baseDirectory: 'C:\\floe-session' },
     timeoutMs: 100,
   });
   try {
@@ -346,7 +387,10 @@ test('SDK tool selection is exact and model-aware without vendor agent tools', (
   assert.deepEqual(codexWrite.filters, ['builtin:apply_patch']);
   assert.equal(copilotToolCatalogForModel().includes('task'), false);
   assert.equal(copilotToolCatalogForModel().includes('skill'), false);
-  assert.throws(() => new CopilotRuntime({ defaultPermissionDecision: 'reject_once' }), /allow_once/);
+  assert.throws(() => new CopilotRuntime({
+    clientOptions: { baseDirectory: 'C:\\floe-session' },
+    defaultPermissionDecision: 'reject_once',
+  }), /allow_once/);
 });
 
 test('SDK pre-tool normalization preserves full shell and write facts', () => {

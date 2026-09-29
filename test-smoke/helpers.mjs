@@ -1,6 +1,8 @@
 // Shared helpers for the real-binary smoke suite (test-smoke/ only - never imported by test/).
 import { CopilotRuntime } from '../src/adapters/copilot.mjs';
 import { CodexRuntime } from '../src/adapters/codex.mjs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /** Cheapest available Copilot model, per the user's explicit instruction to keep real spend minimal. */
 export const CHEAP_COPILOT_MODEL = 'claude-haiku-4.5';
@@ -23,7 +25,11 @@ export async function probe(makeRuntime, label) {
 }
 
 export function makeCopilotSdkRuntime(options = {}) {
-  return new CopilotRuntime({ timeoutMs: 120000, ...options });
+  return new CopilotRuntime({
+    timeoutMs: 120000,
+    clientOptions: { baseDirectory: join(tmpdir(), 'floe-runtime-copilot-smoke') },
+    ...options,
+  });
 }
 
 export function makeCodexRuntime(options = {}) {

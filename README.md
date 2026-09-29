@@ -27,6 +27,10 @@ import { CodexRuntime } from 'floe-runtime/adapters/codex';
 // or: import { CopilotRuntime } from 'floe-runtime/adapters/copilot';
 
 const runtime = new CodexRuntime({ model: 'gpt-5-codex', timeoutMs: 20 * 60 * 1000 });
+// Copilot requires a caller-owned session location:
+// const runtime = new CopilotRuntime({
+//   clientOptions: { baseDirectory: '/path/to/floe-owned/copilot-session' },
+// });
 
 await runtime.start();                 // starts the selected backend
 
@@ -154,6 +158,9 @@ and incomplete structured output are reported as distinct failures.
 active. Every session uses SDK `mode: "empty"` with an exact `availableTools`
 allowlist. File hooks, config discovery, tool search, skills, memory, MCP,
 extensions, host Git operations, and vendor permission state are disabled.
+Construction requires either `clientOptions.baseDirectory` or
+`clientOptions.sessionFs`; an invalid runtime is rejected immediately instead
+of failing when its first turn starts.
 Model listing and selection use SDK APIs; authentication is owned by the SDK
 runtime.
 
@@ -422,7 +429,9 @@ import { Fleet, CopilotRuntime, CodexRuntime } from 'floe-runtime';
 
 const fleet = new Fleet({
   backends: {
-    copilot: () => new CopilotRuntime({}),
+    copilot: () => new CopilotRuntime({
+      clientOptions: { baseDirectory: '/path/to/floe-owned/copilot-session' },
+    }),
     codex: () => new CodexRuntime({}),
   },
   defaultBackend: 'copilot',       // Copilot is first-call; Codex stays fully selectable per agent

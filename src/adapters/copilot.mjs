@@ -1,3 +1,7 @@
+/**
+ * @invariant CopilotRuntime owns the official SDK boundary. Empty-mode clients
+ * must have a caller-owned session location before construction succeeds.
+ */
 import { Runtime } from '../runtime.mjs';
 import { RuntimeFault, check, id } from '../errors.mjs';
 import { SessionRegistry, sessionKey } from '../session-reuse.mjs';
@@ -97,6 +101,11 @@ export class CopilotRuntime extends Runtime {
     ...legacyOptions
   } = {}) {
     super({ command: 'copilot-sdk', unavailableCode: 'copilot_unavailable', permissionPolicy, defaultPermissionDecision, ...legacyOptions });
+    const hasBaseDirectory = typeof clientOptions.baseDirectory === 'string' && clientOptions.baseDirectory.trim().length > 0;
+    const hasSessionFs = clientOptions.sessionFs !== undefined && clientOptions.sessionFs !== null;
+    if (!hasBaseDirectory && !hasSessionFs) {
+      throw new TypeError('CopilotRuntime requires clientOptions.baseDirectory or clientOptions.sessionFs.');
+    }
     if (defaultPermissionDecision !== 'allow_once') {
       throw new TypeError('Copilot allows engine tools unless a configured policy restricts them; defaultPermissionDecision must be allow_once.');
     }

@@ -1,3 +1,6 @@
+// @invariant CopilotRuntime construction requires a caller-owned SDK session
+// location through clientOptions.baseDirectory or clientOptions.sessionFs.
+//
 // Hand-authored type declarations for the CopilotRuntime adapter.
 //
 // floe-runtime is authored in plain ESM (.mjs); these declarations exist so a
@@ -248,13 +251,18 @@ export function createCopilotToolHook(options: {
   invocation?: { sessionId?: string },
 ) => Promise<CopilotPreToolHookOutput>;
 
-export interface CopilotRuntimeOptions {
+export type CopilotClientSessionOptions = Record<string, unknown> & (
+  | { baseDirectory: string; sessionFs?: unknown }
+  | { baseDirectory?: string; sessionFs: unknown }
+);
+
+export type CopilotRuntimeOptions = {
   model?: string;
   timeoutMs?: number;
   quiesceTimeoutMs?: number;
   client?: unknown;
   clientFactory?: (options: Record<string, unknown>) => unknown;
-  clientOptions?: Record<string, unknown>;
+  clientOptions: CopilotClientSessionOptions;
   systemMessage?: SystemMessageConfig | string;
   tools?: HostTool[];
   availableTools?: string[];
@@ -263,7 +271,7 @@ export interface CopilotRuntimeOptions {
   defaultPermissionDecision?: 'allow_once';
   toolPolicyTimeoutMs?: number;
   unhandledRequestTimeoutMs?: number;
-}
+};
 
 export interface CopilotCapabilities extends Record<string, boolean> {
   setModel: true;
@@ -319,7 +327,7 @@ export interface UsageEvent {
 }
 
 export class CopilotRuntime extends EventEmitter {
-  constructor(options?: CopilotRuntimeOptions);
+  constructor(options: CopilotRuntimeOptions);
   readonly model?: string;
   capabilities(): CopilotCapabilities;
   start(): Promise<RuntimeStartInfo>;

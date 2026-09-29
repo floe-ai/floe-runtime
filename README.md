@@ -166,6 +166,14 @@ the SDK runtime.
 blocks, which are mapped to SDK message options. Other block types, including
 embedded context, fail with `unsupported_prompt_block` before sending.
 
+`CopilotEngineAccountAdapter` performs a pre-turn account check through a
+short-lived SDK client and publishes normalized `state` events for
+reachability, authentication, and entitlement. Its `signIn()` and
+`cancelSignIn()` methods drive an explicitly supplied, packaged official
+Copilot CLI through `copilot login`; OAuth credentials remain in GitHub's
+credential store. SDK and login children never receive
+`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the parent process.
+
 ## Parity surface
 
 Both adapters implement the same additional methods beyond the core `run`/

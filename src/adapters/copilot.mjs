@@ -5,6 +5,7 @@ import { extractStructuredOutput } from '../schema.mjs';
 import { unsupported } from '../capabilities.mjs';
 import { CopilotClient } from '@github/copilot-sdk';
 export { defineTool } from '@github/copilot-sdk';
+export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
 
 const COMPLETE_FINISH_REASONS = new Set(['stop', 'end_turn', 'completed', 'success']);
 const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;

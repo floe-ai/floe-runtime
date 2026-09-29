@@ -16,6 +16,56 @@ export function defineTool<T = unknown>(name: string, config: {
   defer?: 'auto' | 'never';
 }): HostTool;
 
+export type EngineAuthentication = 'unknown' | 'signed_out' | 'signed_in' | 'not_required';
+export type EngineAccess = 'unknown' | 'entitled' | 'not_entitled' | 'policy_blocked';
+export type EngineReachability = 'unknown' | 'reachable' | 'unreachable';
+
+export interface EngineAccountState {
+  engine: 'copilot';
+  phase: 'checking' | 'ready' | 'action_required' | 'unavailable';
+  authentication: EngineAuthentication;
+  access: EngineAccess;
+  reachability: EngineReachability;
+  account?: { label: string; host?: string };
+  action?: 'sign_in' | 'check_subscription' | 'contact_admin' | 'retry';
+  message: string;
+  checked_at: string;
+  revision: number;
+}
+
+export interface SignInProgress {
+  operationId: string;
+  engine: 'copilot';
+  status: 'starting' | 'waiting_for_person' | 'succeeded' | 'failed' | 'cancelled';
+  message: string;
+}
+
+export interface CopilotEngineAccountAdapterOptions {
+  clientFactory?: (options: Record<string, unknown>) => unknown | Promise<unknown>;
+  clientOptions?: Record<string, unknown>;
+  cliPath?: string;
+  environment?: Record<string, string | undefined>;
+  spawnProcess?: (...args: any[]) => any;
+  now?: () => string;
+  operationId?: () => string;
+}
+
+export function copilotChildEnvironment(
+  environment?: Record<string, string | undefined>,
+): Record<string, string | undefined>;
+
+export class CopilotEngineAccountAdapter extends EventEmitter {
+  constructor(options?: CopilotEngineAccountAdapterOptions);
+  currentState(): EngineAccountState;
+  check(): Promise<EngineAccountState>;
+  signIn(options?: { mode?: 'browser' | 'device' }): Promise<{ id: string }>;
+  cancelSignIn(id: string): Promise<void>;
+  close(): Promise<void>;
+  on(event: 'state', listener: (state: EngineAccountState) => void): this;
+  on(event: 'sign_in', listener: (progress: SignInProgress) => void): this;
+  on(event: 'diagnostic', listener: (text: string) => void): this;
+}
+
 export interface RuntimeStartInfo {
   agentCapabilities?: Record<string, unknown>;
   authMethods?: unknown[];

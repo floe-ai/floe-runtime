@@ -1,10 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { CopilotRuntime, defineTool } from 'floe-runtime/adapters/copilot';
+import {
+  CopilotEngineAccountAdapter,
+  CopilotRuntime,
+  copilotChildEnvironment,
+  defineTool,
+} from 'floe-runtime/adapters/copilot';
 
-test('Copilot package entry point exports the SDK runtime and direct-tool helper', () => {
+test('Copilot package entry point exports its runtime, account adapter, and helpers', () => {
   assert.equal(typeof CopilotRuntime, 'function');
+  assert.equal(typeof CopilotEngineAccountAdapter, 'function');
+  assert.equal(typeof copilotChildEnvironment, 'function');
   assert.equal(typeof defineTool, 'function');
 });
 

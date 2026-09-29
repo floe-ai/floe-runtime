@@ -10,5 +10,5 @@ export { FEATURES, unsupported } from './capabilities.mjs';
 export { EventLog, watchEvents } from './events.mjs';
 export { CodexRuntime } from './adapters/codex.mjs';
 export { CopilotRuntime } from './adapters/copilot.mjs';
-export { defineTool } from './adapters/copilot.mjs';
+export { CopilotEngineAccountAdapter, copilotChildEnvironment, defineTool } from './adapters/copilot.mjs';
 export { Fleet } from './fleet.mjs';

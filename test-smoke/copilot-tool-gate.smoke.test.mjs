@@ -10,6 +10,9 @@ import {
   resolveCopilotToolSelection,
 } from '../src/adapters/copilot-tools.mjs';
 
+const shell = process.platform === 'win32' ? 'powershell' : 'bash';
+const shellTools = [shell, `read_${shell}`, `stop_${shell}`, `list_${shell}`];
+
 function isolatedEnvironment() {
   const environment = { ...process.env };
   for (const key of Object.keys(environment)) {
@@ -118,11 +121,11 @@ test('pinned Copilot runtime gates every exposed work tool before side effects',
     for (const scenario of [
       {
         model: 'claude-sonnet-5',
-        names: ['powershell', 'read_powershell', 'stop_powershell', 'list_powershell', 'view', 'create', 'edit', 'web_fetch', 'grep', 'glob'],
+        names: [...shellTools, 'view', 'create', 'edit', 'web_fetch', 'grep', 'glob'],
       },
       {
         model: 'gpt-5.1-codex',
-        names: ['powershell', 'read_powershell', 'stop_powershell', 'list_powershell', 'apply_patch', 'view', 'web_fetch', 'rg', 'glob'],
+        names: [...shellTools, 'apply_patch', 'view', 'web_fetch', 'rg', 'glob'],
       },
     ]) {
       const marker = join(workspace, `${scenario.model}-must-not-exist.txt`);
@@ -152,10 +155,15 @@ test('pinned Copilot runtime gates every exposed work tool before side effects',
       assert.doesNotMatch(JSON.stringify(skills), /operator-skill/i);
       await missing(plantedHookMarker);
       const invocations = {
-        powershell: { command: `Set-Content -LiteralPath '${marker}' -Value bypass`, description: 'denial marker' },
-        read_powershell: { shellId: 'missing-proof-shell', delay: 0 },
-        stop_powershell: { shellId: 'missing-proof-shell' },
-        list_powershell: {},
+        [shell]: {
+          command: process.platform === 'win32'
+            ? `Set-Content -LiteralPath '${marker}' -Value bypass`
+            : `printf bypass > '${marker}'`,
+          description: 'denial marker',
+        },
+        [`read_${shell}`]: { shellId: 'missing-proof-shell', delay: 0 },
+        [`stop_${shell}`]: { shellId: 'missing-proof-shell' },
+        [`list_${shell}`]: {},
         view: { path: readable },
         create: { path: marker, file_text: 'bypass' },
         edit: { path: readable, old_str: 'original', new_str: 'bypass' },

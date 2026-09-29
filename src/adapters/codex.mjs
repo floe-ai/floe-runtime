@@ -1,3 +1,7 @@
+/**
+ * @invariant Quiescence is push-driven: listeners exist before any action
+ * that can emit their terminal event, and no fixed-interval polling is used.
+ */
 // Codex adapter: drives `codex app-server` as a subprocess and speaks its
 // thread/turn JSON-RPC protocol. Generalized from star-map's src/codex.mjs -
 // the thread/turn mechanics, session-reuse mechanics, and quiesce/retire
@@ -629,10 +633,16 @@ export class CodexRuntime extends Runtime {
    * non-active or a `turn/completed` notification for `threadId` - the signal that it is safe to take one
    * confirmatory thread/read. Bounded by `timeoutMs` (a single timeout, not a retry interval).
    */
-  #awaitThreadIdleSignal(threadId, timeoutMs) {
-    return new Promise((resolve, reject) => {
+  #threadIdleSignal(threadId, timeoutMs) {
+    let cancel;
+    const promise = new Promise((resolve, reject) => {
       let settled = false;
       const cleanup = () => { clearTimeout(timer); this.off('notification', handler); };
+      cancel = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+      };
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true; cleanup();
@@ -648,6 +658,7 @@ export class CodexRuntime extends Runtime {
       };
       this.on('notification', handler);
     });
+    return { promise, cancel };
   }
 
   /** Interrupts any active turn, then confirms no in-progress turns or background terminals remain.
@@ -666,9 +677,15 @@ export class CodexRuntime extends Runtime {
     const read = () => this.request('thread/read', { threadId, includeTurns: true });
     let state = await read();
     let inProgress = (state.thread?.turns || []).filter(t => t.status === 'inProgress');
-    for (const turn of inProgress) await this.request('turn/interrupt', { threadId, turnId: turn.id });
-    if (inProgress.length > 0 || state.thread?.status?.type === 'active') {
-      await this.#awaitThreadIdleSignal(threadId, 10000);
+    const needsIdleSignal = inProgress.length > 0 || state.thread?.status?.type === 'active';
+    const idleSignal = needsIdleSignal ? this.#threadIdleSignal(threadId, 10000) : null;
+    try {
+      for (const turn of inProgress) await this.request('turn/interrupt', { threadId, turnId: turn.id });
+      if (idleSignal) await idleSignal.promise;
+    } finally {
+      idleSignal?.cancel();
+    }
+    if (needsIdleSignal) {
       state = await read(); // a single confirmatory read triggered by the push notification, not a retry loop
       inProgress = (state.thread?.turns || []).filter(t => t.status === 'inProgress');
     }

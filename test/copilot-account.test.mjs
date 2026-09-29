@@ -168,7 +168,13 @@ test('Copilot account check distinguishes signed out, entitlement, policy, and r
 });
 
 test('Copilot account check rejects process-global authentication sources', async () => {
-  for (const authType of ['env', 'token', 'api-key', 'gh-cli']) {
+  const cases = {
+    env: "Copilot isn't signed in for Floe. Floe found Copilot credentials in environment variables, but doesn't use them. Sign in to use Copilot here.",
+    token: "Copilot isn't signed in for Floe. Floe found a process-level GitHub token, but doesn't use it as your Copilot account. Sign in to use Copilot here.",
+    'api-key': "Copilot isn't signed in for Floe. Floe found an API key, but doesn't use it as your Copilot account. Sign in to use Copilot here.",
+    'gh-cli': "Copilot isn't signed in for Floe. Floe found your GitHub CLI login, but doesn't use it. Sign in to use Copilot here.",
+  };
+  for (const [authType, message] of Object.entries(cases)) {
     const events = [];
     const { adapter } = accountAdapter({
       clients: [{ auth: { isAuthenticated: true, authType, login: 'wrong-account' }, models: [{ id: 'model' }], events }],
@@ -176,11 +182,12 @@ test('Copilot account check rejects process-global authentication sources', asyn
     const state = await adapter.check();
     assert.equal(state.authentication, 'signed_out');
     assert.equal(state.action, 'sign_in');
+    assert.equal(state.message, message);
     assert.deepEqual(events, ['start', 'ping', 'auth', 'stop']);
   }
 });
 
-test('Copilot sign-in launches the official CLI and rechecks with a fresh SDK client', async () => {
+test('Copilot sign-in launches the official CLI hidden and rechecks with a fresh SDK client', async () => {
   const child = new FakeLoginProcess();
   const spawnCalls = [];
   const progress = [];
@@ -213,9 +220,41 @@ test('Copilot sign-in launches the official CLI and rechecks with a fresh SDK cl
   assert.deepEqual(spawnCalls[0][1].slice(-2), ['login', '--web-flow']);
   assert.equal(spawnCalls[0][2].env.COPILOT_GITHUB_TOKEN, undefined);
   assert.equal(spawnCalls[0][2].env.gh_token, undefined);
+  assert.equal(spawnCalls[0][2].windowsHide, true);
+  assert.equal(spawnCalls[0][2].stdio, 'inherit');
   assert.deepEqual(progress.map(event => event.status), ['starting', 'waiting_for_person', 'succeeded']);
+  assert.equal(
+    progress[1].message,
+    "A browser should open for GitHub sign-in. If it doesn't, cancel this sign-in and run the official Copilot CLI sign-in in a terminal, then try again.",
+  );
   assert.equal(optionsSeen.length, 2);
   assert.equal(adapter.currentState().phase, 'ready');
+});
+
+test('Copilot device sign-in explains where to find the code without parsing CLI output', async () => {
+  const child = new FakeLoginProcess();
+  const spawnCalls = [];
+  const { adapter } = accountAdapter({
+    clients: [{ auth: { isAuthenticated: false }, models: [], events: [] }],
+    spawnProcess: (...args) => {
+      spawnCalls.push(args);
+      return child;
+    },
+  });
+  const waiting = nextEvent(adapter, 'sign_in', event => event.status === 'waiting_for_person');
+
+  await adapter.signIn({ mode: 'device' });
+  child.emit('spawn');
+  const event = await waiting;
+
+  assert.deepEqual(spawnCalls[0][1].slice(-2), ['login', '--device-code']);
+  assert.equal(spawnCalls[0][2].windowsHide, true);
+  assert.equal(spawnCalls[0][2].stdio, 'inherit');
+  assert.equal(
+    event.message,
+    "Finish GitHub device sign-in in the terminal running Floe. If you can't see the code, cancel this sign-in and run the official Copilot CLI sign-in in a terminal, then try again.",
+  );
+  await adapter.cancelSignIn('signin-1');
 });
 
 test('Copilot sign-in cancellation stops the CLI and refreshes readiness', async () => {

@@ -22,6 +22,13 @@ const POLICY_BLOCKED_CODES = new Set([
   'policy_blocked',
 ]);
 
+const PROCESS_GLOBAL_AUTH_MESSAGES = Object.freeze({
+  env: "Copilot isn't signed in for Floe. Floe found Copilot credentials in environment variables, but doesn't use them. Sign in to use Copilot here.",
+  token: "Copilot isn't signed in for Floe. Floe found a process-level GitHub token, but doesn't use it as your Copilot account. Sign in to use Copilot here.",
+  'api-key': "Copilot isn't signed in for Floe. Floe found an API key, but doesn't use it as your Copilot account. Sign in to use Copilot here.",
+  'gh-cli': "Copilot isn't signed in for Floe. Floe found your GitHub CLI login, but doesn't use it. Sign in to use Copilot here.",
+});
+
 export function copilotChildEnvironment(environment = process.env) {
   return Object.fromEntries(
     Object.entries(environment).filter(([key]) => !CREDENTIAL_ENVIRONMENT_KEYS.has(key.toUpperCase())),
@@ -144,7 +151,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
           access: 'unknown',
           reachability: 'reachable',
           action: 'sign_in',
-          message: 'Copilot found process-global credentials. Sign in with the vendor OAuth flow.',
+          message: PROCESS_GLOBAL_AUTH_MESSAGES[auth.authType],
         });
       }
 
@@ -234,7 +241,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
       operation.child = this.spawnProcess(command, args, {
         env: copilotChildEnvironment(this.environment),
         stdio: 'inherit',
-        windowsHide: false,
+        windowsHide: true,
       });
     } catch {
       void this.#finishSignIn(operation, 'failed');
@@ -243,7 +250,13 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
 
     operation.child.once('spawn', () => {
       if (!operation.finished) {
-        this.#publishSignIn(operation, 'waiting_for_person', 'Finish signing in with GitHub.');
+        this.#publishSignIn(
+          operation,
+          'waiting_for_person',
+          mode === 'browser'
+            ? "A browser should open for GitHub sign-in. If it doesn't, cancel this sign-in and run the official Copilot CLI sign-in in a terminal, then try again."
+            : "Finish GitHub device sign-in in the terminal running Floe. If you can't see the code, cancel this sign-in and run the official Copilot CLI sign-in in a terminal, then try again.",
+        );
       }
     });
     operation.child.once('error', () => void this.#finishSignIn(operation, 'failed'));

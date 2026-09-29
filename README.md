@@ -188,6 +188,11 @@ reachability, authentication, and entitlement. Its `signIn()` and
 Copilot CLI through `copilot login`; OAuth credentials remain in GitHub's
 credential store. SDK and login children never receive
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the parent process.
+On Windows the login child is hidden instead of opening a second console.
+Its output remains inherited for terminal users, but Floe does not parse that
+vendor-owned text as a protocol. The pushed waiting state explains that a
+browser should open and directs the person to the official CLI in a terminal
+if it does not.
 
 ## Parity surface
 

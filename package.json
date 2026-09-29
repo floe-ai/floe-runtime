@@ -23,6 +23,7 @@
   ],
   "scripts": {
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "test:native-gates": "node --test --test-concurrency=1 test-smoke/copilot-tool-gate.smoke.test.mjs",
     "smoke": "node --test --test-concurrency=1 test-smoke/*.smoke.test.mjs"
   },
   "dependencies": {

@@ -74,13 +74,37 @@ test('SDK runtime registers system messages, direct tools, and narrow tool allow
   } finally { await runtime.close(); }
 });
 
-test('SDK runtime keeps session errors, missing final messages, and incomplete output distinct', async () => {
-  for (const [prompt, code] of [['[error]', 'session_error'], ['[missing]', 'missing_final_message'], ['[incomplete]', 'report_incomplete']]) {
+test('SDK runtime keeps session errors and incomplete output distinct', async () => {
+  for (const [prompt, code] of [['[error]', 'session_error'], ['[incomplete]', 'report_incomplete']]) {
     const { runtime } = makeRuntime();
     try {
       await assert.rejects(runtime.run('worker', { prompt, schema: SCHEMA }, 'C:\\work'), error => error.code === code);
     } finally { await runtime.close(); }
   }
+});
+
+test('SDK runtime treats a normal turn with no final message as success with empty text', async () => {
+  // Real adapter path against a simulated SDK session that reaches session.idle (aborted: false)
+  // without emitting any assistant message. This is a normal Actor behaviour (e.g. asking a
+  // question then ending the turn silently) and must succeed, not throw missing_final_message.
+  const { runtime } = makeRuntime();
+  try {
+    const result = await runtime.run('worker', { prompt: '[missing]' }, 'C:\\work');
+    assert.equal(result.text, '');
+    assert.equal(result.report, '');
+    assert.equal(result.stopReason, 'end_turn');
+  } finally { await runtime.close(); }
+});
+
+test('SDK runtime still rejects when the SDK reports a genuine session error on an otherwise silent turn', async () => {
+  // Guard: a real SDK error must remain a failure even though there is no final message.
+  const { runtime } = makeRuntime();
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[error][missing]' }, 'C:\\work'),
+      error => error.code === 'session_error',
+    );
+  } finally { await runtime.close(); }
 });
 
 test('SDK model.call_failure rejects even if a final assistant message arrives', async () => {

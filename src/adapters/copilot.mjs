@@ -257,17 +257,18 @@ export class CopilotRuntime extends Runtime {
     if (task.aborted) error = sdkError('interrupted', 'Turn was cancelled.', 409);
     else if (task.sessionError) error = sdkError('session_error', task.sessionError.message || 'Copilot session failed.', 502);
     else if (task.modelCallFailure) error = sdkError('model_call_failure', task.modelCallFailure.message || 'Copilot model call failed.', 502);
-    else if (!task.finalMessage) error = sdkError('missing_final_message', 'Copilot reached session.idle without a final assistant message.', 502);
     else if (finish && !COMPLETE_FINISH_REASONS.has(finish)) error = sdkError('report_incomplete', `The Copilot response was not complete (finish reason: ${finish}).`, 502);
     if (error) {
       this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: error.code === 'interrupted' ? 'interrupted' : 'failed', stopReason: finish || error.code });
       task.reject(error);
     } else {
       try {
-        const report = task.schema ? extractStructuredOutput(task.finalMessage, task.schema, { role: task.role }) : task.finalMessage;
+        // A turn that ends with no error and no final message is a normal success with empty text.
+        const text = task.finalMessage ?? '';
+        const report = task.schema ? extractStructuredOutput(text, task.schema, { role: task.role }) : text;
         const stopReason = finish || 'end_turn';
         this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'completed', stopReason });
-        task.resolve({ report, text: task.finalMessage, sessionId, turnId: task.turnId, stopReason, items: task.items, usage: task.usage, elapsedMs: Date.now() - task.started });
+        task.resolve({ report, text, sessionId, turnId: task.turnId, stopReason, items: task.items, usage: task.usage, elapsedMs: Date.now() - task.started });
       } catch (caught) {
         this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'failed', stopReason: finish || 'end_turn' });
         task.reject(caught);

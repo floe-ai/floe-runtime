@@ -471,11 +471,11 @@ test('SDK tool selection is exact and model-aware without vendor agent tools', (
   assert.deepEqual(copilotToolCatalogForModel('claude-sonnet-5'), [
     'create', 'edit', 'glob', 'grep', LIST_SHELL_TOOL, SHELL_TOOL,
     READ_SHELL_TOOL, STOP_SHELL_TOOL, 'view', 'web_fetch',
-  ]);
+  ].sort());
   assert.deepEqual(copilotToolCatalogForModel('gpt-5.1-codex'), [
     'apply_patch', 'glob', LIST_SHELL_TOOL, SHELL_TOOL, READ_SHELL_TOOL,
     'rg', STOP_SHELL_TOOL, 'view', 'web_fetch',
-  ]);
+  ].sort());
   const defaultWrite = resolveCopilotToolSelection({
     model: 'claude-sonnet-5',
     availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch'],

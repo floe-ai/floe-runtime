@@ -92,6 +92,7 @@ export type PromptBlock =
 export interface RunSettings {
   model?: string;
   timeoutMs?: number;
+  progressTimeoutMs?: number;
   systemMessage?: SystemMessageConfig | string;
   tools?: HostTool[];
   availableTools?: string[];
@@ -265,6 +266,7 @@ export type CopilotRuntimeOptions = {
   model?: string;
   timeoutMs?: number;
   quiesceTimeoutMs?: number;
+  progressTimeoutMs?: number;
   client?: unknown;
   clientFactory?: (options: Record<string, unknown>) => unknown;
   clientOptions: CopilotClientSessionOptions;

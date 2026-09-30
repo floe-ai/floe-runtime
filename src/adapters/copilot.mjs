@@ -35,6 +35,7 @@ export {
 
 const COMPLETE_FINISH_REASONS = new Set(['stop', 'end_turn', 'completed', 'success']);
 const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;
+const DEFAULT_PROGRESS_TIMEOUT_MS = 120000;
 const PROCESS_EXECUTION_TOOLS = new Set(['bash', 'powershell']);
 const TOKEN_USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'];
 
@@ -141,6 +142,7 @@ export class CopilotRuntime extends Runtime {
     model,
     timeoutMs = 45 * 60 * 1000,
     quiesceTimeoutMs = DEFAULT_QUIESCE_TIMEOUT_MS,
+    progressTimeoutMs = DEFAULT_PROGRESS_TIMEOUT_MS,
     client,
     clientFactory,
     clientOptions = {},
@@ -166,9 +168,13 @@ export class CopilotRuntime extends Runtime {
     if (!Number.isFinite(toolPolicyTimeoutMs) || toolPolicyTimeoutMs <= 0) {
       throw new TypeError('Copilot toolPolicyTimeoutMs must be a positive finite number.');
     }
+    if (!Number.isFinite(progressTimeoutMs) || progressTimeoutMs <= 0) {
+      throw new TypeError('Copilot progressTimeoutMs must be a positive finite number.');
+    }
     this.model = model;
     this.timeoutMs = timeoutMs;
     this.quiesceTimeoutMs = quiesceTimeoutMs;
+    this.progressTimeoutMs = progressTimeoutMs;
     this.client = client;
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
     this.clientOptions = isolatedClientOptions(clientOptions);
@@ -408,9 +414,72 @@ export class CopilotRuntime extends Runtime {
     this.publish(sessionId, 'stream', { runtime: 'copilot', sessionId, turnId: task.turnId, kind, delta, raw });
   }
 
+  #clearTaskTimers(task) {
+    clearTimeout(task.timer);
+    clearTimeout(task.progressTimer);
+  }
+
+  #armProgressTimer(sessionId, task, phase = task.progressPhase) {
+    clearTimeout(task.progressTimer);
+    task.progressPhase = phase;
+    if (task.finished || task.activities.size > 0) return;
+    task.progressTimer = setTimeout(
+      () => this.#failStalledTask(sessionId, task),
+      task.progressTimeoutMs,
+    );
+  }
+
+  async #failStalledTask(sessionId, task) {
+    if (task.finished) return;
+    const phase = task.progressPhase === 'sending'
+      ? 'before the SDK acknowledged the prompt'
+      : 'after the SDK acknowledged the prompt';
+    const lastEvent = task.lastEventType || 'none';
+    task.stallFault = sdkError(
+      'copilot_turn_stalled',
+      `Copilot turn made no progress for ${task.progressTimeoutMs}ms ${phase}. Last SDK event: ${lastEvent}.`,
+      504,
+    );
+    const session = this.sessionObjects.get(sessionId);
+    this.sessionObjects.delete(sessionId);
+    this.sessionContexts.delete(sessionId);
+    this.sessions.delete(sessionId);
+    try {
+      task.abortRequested = true;
+      await session?.abort();
+    } catch (error) {
+      this.emit('diagnostic', `Copilot could not interrupt stalled session ${sessionId}: ${error.message}`);
+    }
+    await Promise.race([
+      task.settled,
+      new Promise(resolve => setTimeout(resolve, this.quiesceTimeoutMs)),
+    ]);
+    if (!task.finished) {
+      task.finished = true;
+      this.#clearTaskTimers(task);
+      this.turns.delete(sessionId);
+      task.unsubscribe?.();
+      this.publish(sessionId, 'turn', {
+        runtime: 'copilot',
+        sessionId,
+        turnId: task.turnId,
+        phase: 'failed',
+        stopReason: task.stallFault.code,
+      });
+      task.reject(task.stallFault);
+      task.settle();
+    }
+    try {
+      await session?.disconnect();
+    } catch (error) {
+      this.emit('diagnostic', `Copilot could not retire stalled session ${sessionId}: ${error.message}`);
+    }
+  }
+
   #handleEvent(sessionId, task, event) {
     const data = event?.data || {};
     task.lastActivity = Date.now();
+    task.lastEventType = event?.type || 'unknown';
     if (event.type === 'assistant.turn_start' && data.turnId) task.turnId = data.turnId;
     if (event.type === 'assistant.message_delta') {
       const delta = data.deltaContent || '';
@@ -455,6 +524,7 @@ export class CopilotRuntime extends Runtime {
     } else if (event.type === 'model.call_failure') {
       task.modelCallFailure = data;
     }
+    if (!task.finished) this.#armProgressTimer(sessionId, task, 'event');
   }
 
   #attach(sessionId, session, task) {
@@ -464,14 +534,15 @@ export class CopilotRuntime extends Runtime {
   #finishTask(sessionId, task) {
     if (task.finished) return;
     task.finished = true;
-    clearTimeout(task.timer);
+    this.#clearTaskTimers(task);
     this.turns.delete(sessionId);
     this.sessions.markStopped(sessionId);
     task.unsubscribe?.();
     if (task.usage) task.usage = aggregateUsage(task.modelCalls, task.toolCallIds.size);
     const finish = task.finishReason;
     let error = null;
-    if (task.aborted) error = sdkError('interrupted', 'Turn was cancelled.', 409);
+    if (task.stallFault) error = task.stallFault;
+    else if (task.aborted) error = sdkError('interrupted', 'Turn was cancelled.', 409);
     else if (task.sessionError) error = sdkError('session_error', task.sessionError.message || 'Copilot session failed.', 502);
     else if (task.modelCallFailure) error = sdkError('model_call_failure', task.modelCallFailure.message || 'Copilot model call failed.', 502);
     else if (finish && !COMPLETE_FINISH_REASONS.has(finish)) error = sdkError('report_incomplete', `The Copilot response was not complete (finish reason: ${finish}).`, 502);
@@ -497,6 +568,12 @@ export class CopilotRuntime extends Runtime {
   async run(role, input, cwd, onStart = () => {}, settings = {}, continuation = {}) {
     await this.start();
     const model = Object.hasOwn(settings, 'model') ? settings.model : this.model;
+    const progressTimeoutMs = Object.hasOwn(settings, 'progressTimeoutMs')
+      ? settings.progressTimeoutMs
+      : this.progressTimeoutMs;
+    if (!Number.isFinite(progressTimeoutMs) || progressTimeoutMs <= 0) {
+      throw new TypeError('Copilot progressTimeoutMs must be a positive finite number.');
+    }
     await this.#assertKnownModel(model);
     const sendOptions = promptOptions(input);
     const key = sessionKey({ role, cwd, model, settings, permissions: null, scope: continuation.scope });
@@ -512,14 +589,22 @@ export class CopilotRuntime extends Runtime {
       role, schema: input.schema, started: Date.now(), turnId: id('turn'), items: [], text: '',
       finalMessage: null, finishReason: null, usage: null, modelCalls: [], toolCallIds: new Set(), activities: new Map(), resolve: resolveResult,
       reject: rejectResult, settle, settled, idle: false, abortRequested: false, unverifiedProcessTools: new Set(), finished: false,
-      timer: null, lastActivity: Date.now(),
+      timer: null, progressTimer: null, progressTimeoutMs,
+      progressPhase: 'sending', lastActivity: Date.now(), lastEventType: null, stallFault: null,
     };
     task.timer = setTimeout(async () => {
       try {
         await this.interrupt(sessionId);
         await Promise.race([settled, new Promise((_, reject) => setTimeout(() => reject(sdkError('quiescence_unknown', 'Copilot did not confirm quiescence after timeout.', 409)), this.quiesceTimeoutMs))]);
       } catch (error) {
-        if (!task.finished) { task.finished = true; this.turns.delete(sessionId); rejectResult(error); settle(); }
+        if (!task.finished) {
+          task.finished = true;
+          this.#clearTaskTimers(task);
+          this.turns.delete(sessionId);
+          task.unsubscribe?.();
+          rejectResult(error);
+          settle();
+        }
       }
     }, settings.timeoutMs || this.timeoutMs);
     task.unsubscribe = this.#attach(sessionId, session, task);
@@ -527,11 +612,13 @@ export class CopilotRuntime extends Runtime {
     this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'started' });
     try {
       await onStart(sessionId, { model: model || null, runtimeInstance: this, session: { action: reused ? 'reused' : 'fresh', reason } });
-      await session.send(sendOptions);
+      this.#armProgressTimer(sessionId, task, 'sending');
+      await Promise.race([session.send(sendOptions), completion]);
+      if (!task.finished) this.#armProgressTimer(sessionId, task, 'queued');
     } catch (error) {
       if (!task.finished) {
         task.finished = true;
-        clearTimeout(task.timer);
+        this.#clearTaskTimers(task);
         this.turns.delete(sessionId);
         task.unsubscribe?.();
         const fault = typeof error?.code === 'string'

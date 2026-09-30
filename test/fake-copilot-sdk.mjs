@@ -50,6 +50,41 @@ export class FakeCopilotSession {
     this.client.sendOrder.push('send');
     this.client.lastSendOptions = options;
     if (prompt.includes('[send-error]')) throw new Error('model request failed');
+    if (prompt.includes('[silent-before-ack]')) {
+      this.client.pending = this;
+      return new Promise(() => {});
+    }
+    if (prompt.includes('[silent-after-ack]')) {
+      this.client.pending = this;
+      return 'message-1';
+    }
+    if (prompt.includes('[silent-after-start]')) {
+      this.emit('assistant.turn_start', { turnId: 'model-turn-silent' });
+      this.client.pending = this;
+      return 'message-1';
+    }
+    if (prompt.includes('[slow-tool]')) {
+      this.emit('assistant.turn_start', { turnId: 'model-turn-slow-tool' });
+      this.emit('tool.execution_start', {
+        toolCallId: 'tool-slow-1',
+        toolName: 'request',
+        arguments: { question: 'Wait?' },
+      });
+      setTimeout(() => {
+        this.emit('tool.execution_complete', {
+          toolCallId: 'tool-slow-1',
+          toolName: 'request',
+          success: true,
+          result: 'done',
+        });
+        this.emit('assistant.message', {
+          messageId: 'message-slow-1',
+          content: '{"ok":true,"summary":"done"}',
+        });
+        this.emit('session.idle', { aborted: false });
+      }, 30);
+      return 'message-1';
+    }
     if (prompt.includes('[cancel-tool]')) {
       this.emit('assistant.turn_start', { turnId: 'model-turn-cancelled' });
       this.emit('tool.execution_start', {

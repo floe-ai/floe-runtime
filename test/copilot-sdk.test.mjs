@@ -648,6 +648,44 @@ test('SDK runtime preserves model listing and selection', async () => {
   } finally { await runtime.close(); }
 });
 
+test('SDK runtime refuses an unknown requested model before creating a session', async () => {
+  const { client, runtime } = makeRuntime();
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work', () => {}, { model: 'missing-model' }),
+      error => error.code === 'copilot_model_unavailable'
+        && error.message.includes("'missing-model'")
+        && error.message.includes('gpt-5-mini')
+        && error.message.includes('fixture-model'),
+    );
+    assert.equal(client.sessions.size, 0);
+    assert.equal(client.listModelsCalls, 1);
+  } finally { await runtime.close(); }
+});
+
+test('SDK runtime refuses an unknown model change without changing the live session', async () => {
+  const { client, runtime } = makeRuntime();
+  try {
+    const result = await runtime.run(
+      'worker',
+      { prompt: 'hello', schema: SCHEMA },
+      'C:\\work',
+      () => {},
+      { model: 'fixture-model' },
+    );
+    await assert.rejects(
+      runtime.setModel(result.sessionId, 'missing-model'),
+      error => error.code === 'copilot_model_unavailable'
+        && error.message.includes("'missing-model'")
+        && error.message.includes('gpt-5-mini')
+        && error.message.includes('fixture-model'),
+    );
+    assert.equal(client.sessions.get(result.sessionId).config.model, 'fixture-model');
+    assert.equal(client.optionsUpdates?.length ?? 0, 0);
+    assert.equal(client.listModelsCalls, 1);
+  } finally { await runtime.close(); }
+});
+
 test('SDK model changes replace the exact tool catalog and its hook together', async () => {
   const { client, runtime } = makeRuntime({
     model: 'claude-sonnet-5',

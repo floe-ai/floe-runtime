@@ -2,6 +2,8 @@
  * @invariant CopilotRuntime owns the official SDK boundary. Clients use
  * caller-owned storage without ambient configuration, and every session must
  * match the user OAuth account confirmed by readiness before a turn can run.
+ * An explicitly requested model must match the SDK's own advertised catalogue;
+ * Copilot may never silently substitute its default model.
  * A shell active at cancellation can quiesce only through session retirement,
  * because SDK idle events do not prove that its OS process tree exited.
  */
@@ -181,6 +183,7 @@ export class CopilotRuntime extends Runtime {
     this.turns = new Map();
     this.commands = new Map();
     this.starting = null;
+    this.modelCatalogue = null;
   }
 
   capabilities() {
@@ -211,9 +214,52 @@ export class CopilotRuntime extends Runtime {
   }
 
   async models() {
+    const { models } = await this.#models();
+    return models.map(model => ({ ...model }));
+  }
+
+  async #models() {
     await this.start();
-    const models = await this.client.listModels();
-    return (models || []).map(model => ({ ...model, modelId: model.modelId || model.id }));
+    if (!this.modelCatalogue) {
+      const pending = (async () => {
+        let listed;
+        try {
+          listed = await this.client.listModels();
+        } catch (error) {
+          throw sdkError('copilot_models_unavailable', `Copilot could not list its available models: ${error.message}`, 503, error);
+        }
+        if (!Array.isArray(listed) || listed.length === 0) {
+          throw sdkError('copilot_models_unavailable', 'Copilot returned no available models.', 503);
+        }
+        const models = listed.map(model => ({ ...model, modelId: model.modelId || model.id }));
+        const modelIds = models
+          .map(model => model.modelId)
+          .filter(modelId => typeof modelId === 'string' && modelId.length > 0);
+        if (modelIds.length === 0) {
+          throw sdkError('copilot_models_unavailable', 'Copilot returned no models with usable identifiers.', 503);
+        }
+        return { models, modelIds: [...new Set(modelIds)] };
+      })();
+      this.modelCatalogue = pending;
+      void pending.catch(() => {
+        if (this.modelCatalogue === pending) this.modelCatalogue = null;
+      });
+    }
+    return this.modelCatalogue;
+  }
+
+  async #assertKnownModel(model) {
+    if (model === undefined || model === null || model === '') return;
+    if (typeof model !== 'string') {
+      throw sdkError('copilot_model_unavailable', `Copilot model '${String(model)}' is unavailable.`, 400);
+    }
+    const { modelIds } = await this.#models();
+    if (modelIds.includes(model)) return;
+    throw sdkError(
+      'copilot_model_unavailable',
+      `Copilot model '${model}' is unavailable. Available models: ${modelIds.join(', ')}.`,
+      400,
+    );
   }
 
   #toolHook(selection) {
@@ -451,6 +497,7 @@ export class CopilotRuntime extends Runtime {
   async run(role, input, cwd, onStart = () => {}, settings = {}, continuation = {}) {
     await this.start();
     const model = Object.hasOwn(settings, 'model') ? settings.model : this.model;
+    await this.#assertKnownModel(model);
     const sendOptions = promptOptions(input);
     const key = sessionKey({ role, cwd, model, settings, permissions: null, scope: continuation.scope });
     const destination = await this.#getSession(cwd, model, settings, continuation);
@@ -509,6 +556,7 @@ export class CopilotRuntime extends Runtime {
     check(session, 'session_unavailable', `Copilot session '${sessionId}' is unavailable.`, 404);
     const context = this.sessionContexts.get(sessionId);
     check(context, 'session_unavailable', `Copilot session '${sessionId}' has no tool-catalog context.`, 404);
+    await this.#assertKnownModel(modelId);
     try {
       await session.setModel(modelId);
       const { config, selection } = this.#sessionConfig(context.cwd, modelId, context.settings, sessionId);

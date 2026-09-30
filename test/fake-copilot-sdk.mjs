@@ -151,6 +151,7 @@ export class FakeCopilotClient {
     this.sendOrder = [];
     this.abortWithoutIdle = false;
     this.pending = null;
+    this.listModelsCalls = 0;
   }
 
   async start() {}
@@ -172,7 +173,13 @@ export class FakeCopilotClient {
   }
 
   async listModels() {
-    return [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'fixture-model', name: 'Fixture model' }];
+    this.listModelsCalls += 1;
+    return [
+      { id: 'gpt-5-mini', name: 'GPT-5 mini' },
+      { id: 'fixture-model', name: 'Fixture model' },
+      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
+      { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' },
+    ];
   }
 
   async listSessions() {

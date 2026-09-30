@@ -226,7 +226,7 @@ equivalent capability, the method throws a `RuntimeFault` with code
 
 | Method | Codex | Copilot | Notes |
 | --- | --- | --- | --- |
-| `setModel(id, modelId)` | ✅ applied on the next `turn/start` | ✅ SDK session model selection | |
+| `setModel(id, modelId)` | ✅ applied on the next `turn/start` | ✅ SDK session model selection | Copilot rejects model IDs absent from the SDK's advertised catalogue; it never silently falls back to the default. |
 | `releaseSession(id)` / `retire(id)` | ✅ `thread/unsubscribe` | ✅ SDK session disconnect | |
 | `setMode(id, mode)` | ❌ unsupported | ❌ unsupported | Codex has no session-mode concept |
 | `setPermissions(id, level)` | ✅ `approvalPolicy`/`sandbox`/`sandboxPolicy` override, applied next `turn/start` | ❌ unsupported; configure `permissionPolicy` at construction | |

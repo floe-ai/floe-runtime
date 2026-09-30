@@ -93,6 +93,45 @@ test('SDK runtime completes a turn only at session.idle and supports multiple mo
   } finally { await runtime.close(); }
 });
 
+test('SDK runtime bounds silence before the SDK acknowledges a prompt', async () => {
+  const { client, runtime } = makeRuntime({ timeoutMs: 200, progressTimeoutMs: 10 });
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[silent-before-ack]' }, 'C:\\work'),
+      error => error.code === 'copilot_turn_stalled'
+        && error.message.includes('before the SDK acknowledged the prompt')
+        && error.message.includes('Last SDK event: none'),
+    );
+    assert.deepEqual(client.sendOrder.slice(0, 2), ['send', 'abort']);
+  } finally { await runtime.close(); }
+});
+
+test('SDK runtime bounds silence after queue acknowledgement and reports the last SDK event', async () => {
+  const { runtime } = makeRuntime({ timeoutMs: 200, progressTimeoutMs: 10 });
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[silent-after-ack]' }, 'C:\\work'),
+      error => error.code === 'copilot_turn_stalled'
+        && error.message.includes('after the SDK acknowledged the prompt')
+        && error.message.includes('Last SDK event: none'),
+    );
+    await assert.rejects(
+      runtime.run('worker', { prompt: '[silent-after-start]' }, 'C:\\work'),
+      error => error.code === 'copilot_turn_stalled'
+        && error.message.includes('after the SDK acknowledged the prompt')
+        && error.message.includes('Last SDK event: assistant.turn_start'),
+    );
+  } finally { await runtime.close(); }
+});
+
+test('SDK runtime does not classify a running tool as silent', async () => {
+  const { runtime } = makeRuntime({ timeoutMs: 200, progressTimeoutMs: 10 });
+  try {
+    const result = await runtime.run('worker', { prompt: '[slow-tool]', schema: SCHEMA }, 'C:\\work');
+    assert.deepEqual(result.report, { ok: true, summary: 'done' });
+  } finally { await runtime.close(); }
+});
+
 test('SDK runtime streams text and normalizes direct tool activity', async () => {
   const { runtime } = makeRuntime();
   const streams = [];
@@ -710,6 +749,21 @@ test('SDK rejects invalid tool-policy timeouts before creating a session', () =>
     () => makeRuntime({ toolPolicyTimeoutMs: 0 }),
     /positive finite number/,
   );
+});
+
+test('SDK rejects invalid progress timeouts before creating a session', async () => {
+  assert.throws(
+    () => makeRuntime({ progressTimeoutMs: 0 }),
+    /positive finite number/,
+  );
+  const { client, runtime } = makeRuntime();
+  try {
+    await assert.rejects(
+      runtime.run('worker', { prompt: 'hello' }, 'C:\\work', () => {}, { progressTimeoutMs: 0 }),
+      /positive finite number/,
+    );
+    assert.equal(client.sessions.size, 0);
+  } finally { await runtime.close(); }
 });
 
 test('SDK resume ignores legacy goal options instead of invoking unsupported goal handling', async () => {

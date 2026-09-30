@@ -152,6 +152,11 @@ The adapter subscribes before sending a prompt. A turn completes at
 `session.idle`; `assistant.turn_end` is a model-call boundary within the agent
 loop. Cancellation waits for abort acknowledgement followed by `session.idle`;
 missing idle raises `quiescence_unknown`.
+If the SDK acknowledges a prompt but emits no progress for two minutes, the
+runtime fails with `copilot_turn_stalled` and retires that vendor session. The
+same bound covers a `send()` call that never acknowledges. Active tool
+execution is exempt because its start event is visible progress and the tool
+may legitimately run longer; the overall turn timeout still applies.
 
 `session.error`, model-call failures, missing final messages, aborted turns,
 and incomplete structured output are reported as distinct failures.

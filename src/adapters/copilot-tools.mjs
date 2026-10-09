@@ -1,6 +1,8 @@
 /**
  * @invariant Every exposed Copilot built-in is platform-specific, explicitly
  * mapped to a Floe operation, and normalized before policy sees the call.
+ * The caller's beforeToolUse runs only after the policy allows a call and can
+ * only block or change it; it can never widen a policy denial.
  */
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -299,9 +301,85 @@ function denied(outcome, request) {
   };
 }
 
+async function withTimeout(work, timeoutMs, code, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(work),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(fault(code, message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function decidePolicy(policy, request, timeoutMs) {
+  const outcome = await withTimeout(
+    () => policy(request),
+    timeoutMs,
+    'tool_policy_timeout',
+    `Floe did not decide tool call '${request.id}' before the policy timeout.`,
+  );
+  const decision = typeof outcome === 'string' ? outcome : outcome?.decision;
+  if (decision === 'allow_once') return null;
+  if (decision === 'reject_once' || decision === 'cancel') return denied(outcome, request);
+  return denied({
+    decision: 'reject_once',
+    refusal: { reason: `Floe returned unsupported tool decision '${String(decision)}'.` },
+  }, request);
+}
+
+function blocked(reason, request) {
+  return denied({ decision: 'reject_once', refusal: { reason } }, request);
+}
+
+/**
+ * Runs the caller's beforeToolUse callback after the policy allowed a call.
+ * It can only block or change; a changed built-in call is re-validated and
+ * re-decided by the policy so a change can never bypass a denial.
+ */
+async function decideBeforeToolUse({ beforeToolUse, policy, timeoutMs, call, request, rebuild, onDiagnostic }) {
+  const result = await withTimeout(
+    () => beforeToolUse(call),
+    timeoutMs,
+    'before_tool_use_timeout',
+    `beforeToolUse did not decide tool call '${call.id}' before the timeout.`,
+  );
+  const decision = result === undefined || result === null ? 'allow' : result?.decision;
+  if (decision === 'allow') return { permissionDecision: 'allow' };
+  if (decision === 'block') {
+    const reason = typeof result.reason === 'string' && result.reason.trim()
+      ? result.reason
+      : 'beforeToolUse blocked this tool call.';
+    onDiagnostic(`Copilot beforeToolUse blocked tool '${call.toolName}' (${call.id}): ${reason}`);
+    return blocked(reason, request);
+  }
+  if (decision === 'change') {
+    if (result.args === undefined) {
+      throw fault('before_tool_use_invalid', `beforeToolUse changed tool call '${call.id}' without providing args.`);
+    }
+    if (call.source === 'builtin') {
+      const changed = rebuild(result.args);
+      if (policy) {
+        const refusal = await decidePolicy(policy, changed, timeoutMs);
+        if (refusal) {
+          onDiagnostic(`Copilot beforeToolUse change to tool '${call.toolName}' (${call.id}) was denied by the permission policy.`);
+          return refusal;
+        }
+      }
+    }
+    onDiagnostic(`Copilot beforeToolUse changed the input of tool '${call.toolName}' (${call.id}).`);
+    return { permissionDecision: 'allow', modifiedArgs: result.args };
+  }
+  throw fault('before_tool_use_invalid', `beforeToolUse returned unsupported decision '${String(decision)}'.`);
+}
+
 export function createCopilotToolHook({
   selection,
   policy,
+  beforeToolUse,
   timeoutMs,
   toolCallId = () => `tool-call-${randomUUID()}`,
   onDiagnostic = () => {},
@@ -309,37 +387,46 @@ export function createCopilotToolHook({
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError('Copilot tool policy timeout must be a positive finite number.');
   }
+  if (beforeToolUse !== undefined && typeof beforeToolUse !== 'function') {
+    throw new TypeError('Copilot beforeToolUse must be a function.');
+  }
   return async (input, invocation = {}) => {
     let normalized;
+    let stage = 'tool policy';
     try {
-      if (selection.customNames.includes(input?.toolName)) return { permissionDecision: 'allow' };
-      normalized = normalizeCopilotToolCall(input, invocation, selection, toolCallId());
-      if (!policy) return { permissionDecision: 'allow' };
-
-      let timer;
-      let outcome;
-      try {
-        outcome = await Promise.race([
-          Promise.resolve(policy(normalized)),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => {
-              const error = fault('tool_policy_timeout', `Floe did not decide tool call '${normalized.id}' before the policy timeout.`);
-              reject(error);
-            }, timeoutMs);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
+      const custom = selection.customNames.includes(input?.toolName);
+      if (custom && !beforeToolUse) return { permissionDecision: 'allow' };
+      const id = toolCallId();
+      if (custom) {
+        normalized = { id, operationId: null };
+      } else {
+        normalized = normalizeCopilotToolCall(input, invocation, selection, id);
+        if (policy) {
+          const refusal = await decidePolicy(policy, normalized, timeoutMs);
+          if (refusal) return refusal;
+        }
       }
-      const decision = typeof outcome === 'string' ? outcome : outcome?.decision;
-      if (decision === 'allow_once') return { permissionDecision: 'allow' };
-      if (decision === 'reject_once' || decision === 'cancel') return denied(outcome, normalized);
-      return denied({
-        decision: 'reject_once',
-        refusal: { reason: `Floe returned unsupported tool decision '${String(decision)}'.` },
-      }, normalized);
+      if (!beforeToolUse) return { permissionDecision: 'allow' };
+
+      stage = 'beforeToolUse';
+      return await decideBeforeToolUse({
+        beforeToolUse,
+        policy,
+        timeoutMs,
+        request: normalized,
+        onDiagnostic,
+        rebuild: args => normalizeCopilotToolCall({ ...input, toolArgs: args }, invocation, selection, id),
+        call: {
+          id,
+          toolName: input.toolName,
+          source: custom ? 'custom' : 'builtin',
+          args: input.toolArgs,
+          sessionId: invocation?.sessionId || input?.sessionId || '',
+          cwd: input?.workingDirectory || null,
+        },
+      });
     } catch (error) {
-      onDiagnostic(`Copilot tool policy failed closed: ${error.message}`);
+      onDiagnostic(`Copilot ${stage} failed closed: ${error.message}`);
       return denied({
         decision: 'reject_once',
         refusal: { reason: `Floe could not safely evaluate this tool call: ${error.message}` },

@@ -239,16 +239,39 @@ export const normalizeCopilotPermissionRequest: typeof normalizeCopilotToolCall;
 export interface CopilotPreToolHookOutput {
   permissionDecision: 'allow' | 'deny';
   permissionDecisionReason?: string;
+  modifiedArgs?: unknown;
 }
+
+/** One tool call about to run, as seen by `beforeToolUse`. */
+export interface CopilotBeforeToolUseCall {
+  /** Runtime-assigned id; the same id the permission policy saw. The SDK's own tool call id is not exposed to hooks. */
+  id: string;
+  toolName: string;
+  source: 'builtin' | 'custom';
+  args: unknown;
+  sessionId: string;
+  cwd: string | null;
+}
+
+export type CopilotBeforeToolUseResult =
+  | { decision: 'allow' }
+  | { decision: 'block'; reason?: string }
+  | { decision: 'change'; args: unknown };
+
+/** Runs after the permission policy allowed a call. Return nothing to allow. */
+export type CopilotBeforeToolUse = (
+  call: CopilotBeforeToolUseCall,
+) => CopilotBeforeToolUseResult | void | Promise<CopilotBeforeToolUseResult | void>;
 
 export function createCopilotToolHook(options: {
   selection: CopilotToolSelection;
   policy?: (request: CopilotPermissionRequest) => PermissionPolicyDecision | Promise<PermissionPolicyDecision>;
+  beforeToolUse?: CopilotBeforeToolUse;
   timeoutMs: number;
   toolCallId?: () => string;
   onDiagnostic?: (message: string) => void;
 }): (
-  input: { sessionId?: string; toolName?: string; toolArgs?: unknown },
+  input: { sessionId?: string; toolName?: string; toolArgs?: unknown; workingDirectory?: string },
   invocation?: { sessionId?: string },
 ) => Promise<CopilotPreToolHookOutput>;
 
@@ -276,6 +299,7 @@ export type CopilotRuntimeOptions = {
   availableTools?: string[];
   excludedTools?: string[];
   permissionPolicy?: (request: CopilotPermissionRequest) => PermissionPolicyDecision | Promise<PermissionPolicyDecision>;
+  beforeToolUse?: CopilotBeforeToolUse;
   defaultPermissionDecision?: 'allow_once';
   toolPolicyTimeoutMs?: number;
   unhandledRequestTimeoutMs?: number;

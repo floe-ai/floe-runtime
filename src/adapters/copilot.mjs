@@ -152,6 +152,7 @@ export class CopilotRuntime extends Runtime {
     availableTools,
     excludedTools,
     permissionPolicy,
+    beforeToolUse,
     defaultPermissionDecision = 'allow_once',
     toolPolicyTimeoutMs = timeoutMs,
     ...legacyOptions
@@ -171,6 +172,10 @@ export class CopilotRuntime extends Runtime {
     if (!Number.isFinite(progressTimeoutMs) || progressTimeoutMs <= 0) {
       throw new TypeError('Copilot progressTimeoutMs must be a positive finite number.');
     }
+    if (beforeToolUse !== undefined && typeof beforeToolUse !== 'function') {
+      throw new TypeError('Copilot beforeToolUse must be a function.');
+    }
+    this.beforeToolUse = beforeToolUse;
     this.model = model;
     this.timeoutMs = timeoutMs;
     this.quiesceTimeoutMs = quiesceTimeoutMs;
@@ -272,6 +277,7 @@ export class CopilotRuntime extends Runtime {
     return createCopilotToolHook({
       selection,
       policy: this.permissionPolicy,
+      beforeToolUse: this.beforeToolUse,
       timeoutMs: this.toolPolicyTimeoutMs,
       toolCallId: () => id('tool-call'),
       onDiagnostic: message => this.emit('diagnostic', message),

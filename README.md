@@ -203,6 +203,31 @@ structured `tool_policy_denied` or `tool_policy_cancelled` payload to the
 model. Catalog changes fail session startup, and model changes replace and
 revalidate the exact allowlist and hook.
 
+Optional `beforeToolUse(call)` lets the caller step in before **any** tool
+runs, built-in or custom (`defineTool`). It runs inside the same hook, after
+`permissionPolicy`. A policy denial is final and `beforeToolUse` is not called;
+custom tools still skip the policy.
+
+```js
+new CopilotRuntime({
+  // ...
+  async beforeToolUse(call) {
+    // call: { id, toolName, source: 'builtin' | 'custom', args, sessionId, cwd }
+    if (call.toolName === 'web_fetch') return { decision: 'block', reason: 'No network here.' };
+    if (call.toolName === 'lookup') return { decision: 'change', args: { ...call.args, limit: 10 } };
+    // returning nothing (or { decision: 'allow' }) allows the call unchanged
+  },
+});
+```
+
+`call.id` is the runtime-generated ID the policy also saw; SDK hooks do not
+expose the SDK's own tool call ID. A block returns the reason to the model as
+a structured `tool_policy_denied` payload. A changed built-in call must still
+be valid for its tool and is re-decided by `permissionPolicy`, so a change can
+never get past a denial. Throwing, timing out (`toolPolicyTimeoutMs`), or
+returning anything else blocks the call. Every block, change, and failure is
+reported on the `diagnostic` event.
+
 `input.blocks` accepts text, file, directory, selection, blob, and image
 blocks, which are mapped to SDK message options. Other block types, including
 embedded context, fail with `unsupported_prompt_block` before sending.

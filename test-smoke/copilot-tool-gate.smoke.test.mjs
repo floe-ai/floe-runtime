@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CopilotClient } from '@github/copilot-sdk';
+import { CopilotClient, defineTool } from '@github/copilot-sdk';
 import {
   createCopilotToolHook,
   prepareCopilotToolSession,
@@ -27,10 +27,11 @@ async function missing(path) {
   await assert.rejects(access(path));
 }
 
-async function sessionFor(client, workspace, model, selection, hook, permissionRequests) {
+async function sessionFor(client, workspace, model, selection, hook, permissionRequests, tools = []) {
   const session = await client.createSession({
     model,
     workingDirectory: workspace,
+    tools,
     availableTools: selection.filters,
     excludedTools: [],
     enableExperimentalMode: false,
@@ -257,6 +258,95 @@ test('pinned Copilot hook errors fail closed and unrestricted default allows', {
     assert.equal(allowedResult.resultType, 'success');
     assert.equal(await readFile(allowedMarker, 'utf8'), 'allowed by default');
     await allowed.disconnect();
+  } finally {
+    await client.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('pinned Copilot runtime honours beforeToolUse block and change for built-in and custom tools', { timeout: 120_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'floe-copilot-before-tool-use-'));
+  const profile = join(root, 'profile');
+  const workspace = join(root, 'workspace');
+  const changedMarker = join(workspace, 'changed.txt');
+  const blockedMarker = join(workspace, 'blocked.txt');
+  await mkdir(workspace);
+  const handled = [];
+  const echo = defineTool('echo_probe', {
+    description: 'Echo the text argument.',
+    parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    handler: async args => { handled.push(args); return `echo:${args.text}`; },
+  });
+  const client = new CopilotClient({
+    mode: 'copilot-cli',
+    baseDirectory: profile,
+    workingDirectory: workspace,
+    useLoggedInUser: false,
+    env: isolatedEnvironment(),
+    logLevel: 'error',
+  });
+
+  try {
+    await client.start();
+    const selection = resolveCopilotToolSelection({
+      model: 'claude-sonnet-5',
+      tools: [echo],
+      availableTools: ['builtin:create', 'custom:echo_probe'],
+    });
+    const seen = [];
+    const policyPaths = [];
+    const requests = [];
+    const hook = createCopilotToolHook({
+      selection,
+      timeoutMs: 1_000,
+      policy(request) {
+        policyPaths.push(request.facts.paths[0]);
+        return 'allow_once';
+      },
+      beforeToolUse(call) {
+        seen.push(call);
+        if (call.source === 'custom') return { decision: 'change', args: { text: 'CHANGED' } };
+        if (call.args.path === blockedMarker) return { decision: 'block', reason: 'Blocked by beforeToolUse proof.' };
+        return { decision: 'change', args: { ...call.args, file_text: 'CHANGED' } };
+      },
+    });
+    const session = await sessionFor(client, workspace, 'claude-sonnet-5', selection, hook, requests, [echo]);
+
+    const changed = await session.rpc.tools.execute({
+      name: 'create',
+      arguments: { path: changedMarker, file_text: 'ORIGINAL' },
+      toolCallId: 'native-changed',
+    });
+    assert.equal(changed.resultType, 'success');
+    assert.equal(await readFile(changedMarker, 'utf8'), 'CHANGED');
+
+    const blocked = await session.rpc.tools.execute({
+      name: 'create',
+      arguments: { path: blockedMarker, file_text: 'ORIGINAL' },
+      toolCallId: 'native-blocked',
+    });
+    assert.equal(blocked.resultType, 'denied');
+    assert.match(blocked.textResultForLlm, /Blocked by beforeToolUse proof/);
+    await missing(blockedMarker);
+
+    const custom = await session.rpc.tools.execute({
+      name: 'echo_probe',
+      arguments: { text: 'ORIGINAL' },
+      toolCallId: 'native-custom',
+    });
+    assert.equal(custom.resultType, 'success');
+    assert.equal(custom.textResultForLlm, 'echo:CHANGED');
+    assert.deepEqual(handled, [{ text: 'CHANGED' }]);
+
+    assert.deepEqual(seen.map(call => [call.toolName, call.source]), [
+      ['create', 'builtin'],
+      ['create', 'builtin'],
+      ['echo_probe', 'custom'],
+    ]);
+    assert.ok(seen.every(call => call.cwd === workspace && call.sessionId === session.sessionId));
+    assert.deepEqual(policyPaths, [changedMarker, changedMarker, blockedMarker], 'custom tools skip policy; changed built-ins are re-decided');
+    assert.equal(requests.length, 0);
+    await session.disconnect();
   } finally {
     await client.stop();
     await rm(root, { recursive: true, force: true });

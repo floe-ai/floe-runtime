@@ -27,6 +27,6 @@
     "smoke": "node --test --test-concurrency=1 test-smoke/*.smoke.test.mjs"
   },
   "dependencies": {
-    "@github/copilot-sdk": "1.0.13"
+    "@github/copilot-sdk": "1.0.19"
   }
 }

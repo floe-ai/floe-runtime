@@ -147,7 +147,7 @@ if that optional API is unavailable.
 
 ### CopilotRuntime (`src/adapters/copilot.mjs`)
 
-Copilot uses the official `@github/copilot-sdk@1.0.13` and its bundled runtime.
+Copilot uses the official `@github/copilot-sdk@1.0.19` and its bundled runtime.
 The adapter subscribes before sending a prompt. A turn completes at
 `session.idle`; `assistant.turn_end` is a model-call boundary within the agent
 loop. Cancellation waits for abort acknowledgement followed by `session.idle`;
@@ -176,13 +176,19 @@ sessions are refused without fallback.
 Model listing and selection use SDK APIs; authentication is owned by the SDK
 runtime.
 
-The pinned Windows runtime exposes only work tools. Default/Claude-style
-models receive PowerShell and its read/stop/list companions, `view`, `grep`,
-`glob`, `create`, `edit`, and `web_fetch`. Codex models receive the same work
-surface with `rg` replacing `grep` and `apply_patch` replacing `create` and
-`edit`. Vendor sub-agent tools (`task`, `read_agent`, `list_agents`,
-`write_agent`) and vendor-state tools such as `skill` remain absent. Actors
-delegate through Floe, not a hidden vendor fleet.
+The pinned Windows runtime exposes only work tools, in one of two catalogs.
+The default catalog has PowerShell and its read/stop/list companions, `view`,
+`grep`, `glob`, `create`, `edit`, and `web_fetch`. The codex catalog has the
+same work surface with `rg` replacing `grep` and `apply_patch` replacing
+`create` and `edit`. Copilot picks the catalog per model and publishes no rule
+for it (on CLI 1.0.95 every GPT model gets codex, not only `*-codex` models),
+so Floe requests every governed built-in and Copilot keeps the ones that fit
+the model. Session startup then requires the reported tools to equal exactly
+one catalog's expected set. Vendor sub-agent tools (`task`, `read_agent`,
+`list_agents`, `write_agent`) and vendor-state tools such as `skill` remain
+absent. Actors delegate through Floe, not a hidden vendor fleet.
+Use `copilotGovernedBuiltins(platform)` to list every governed built-in;
+`copilotToolCatalogForModel` is deprecated and returns the same list.
 
 Every vendor built-in runs through one in-process SDK `onPreToolUse` hook
 before side effects. The hook calls `permissionPolicy` for every call. With no

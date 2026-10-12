@@ -25,8 +25,10 @@ export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
 export {
   COPILOT_BUILTIN_TOOL_MANIFEST,
+  COPILOT_TOOL_CATALOGS,
   COPILOT_TOOL_MANIFEST_VERSION,
   createCopilotToolHook,
+  copilotGovernedBuiltins,
   copilotToolCatalogForModel,
   normalizeCopilotToolCall,
   normalizeCopilotPermissionRequest,
@@ -214,7 +216,7 @@ export class CopilotRuntime extends Runtime {
         if (!this.client) this.client = await this.clientFactory(this.clientOptions);
         await this.client.start();
         this.ready = true;
-        this.info = { backend: 'copilot-sdk', sdkVersion: '1.0.13' };
+        this.info = { backend: 'copilot-sdk', sdkVersion: '1.0.19' };
         this.emit('ready', this.info);
         return this.info;
       } catch (error) {
@@ -304,7 +306,6 @@ export class CopilotRuntime extends Runtime {
       tools,
       availableTools: settings.availableTools ?? this.availableTools,
       excludedTools: settings.excludedTools ?? this.excludedTools,
-      model,
     });
     const config = {
       ...(sessionId ? { sessionId } : {}),

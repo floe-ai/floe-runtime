@@ -11,10 +11,12 @@ export { EventLog, watchEvents } from './events.mjs';
 export { CodexRuntime } from './adapters/codex.mjs';
 export {
   COPILOT_BUILTIN_TOOL_MANIFEST,
+  COPILOT_TOOL_CATALOGS,
   COPILOT_TOOL_MANIFEST_VERSION,
   CopilotRuntime,
   CopilotEngineAccountAdapter,
   copilotChildEnvironment,
+  copilotGovernedBuiltins,
   copilotToolCatalogForModel,
   createCopilotToolHook,
   defineTool,

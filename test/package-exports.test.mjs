@@ -7,7 +7,9 @@ import {
   CopilotEngineAccountAdapter,
   CopilotRuntime,
   copilotChildEnvironment,
+  copilotGovernedBuiltins,
   copilotToolCatalogForModel,
+  COPILOT_TOOL_CATALOGS,
   createCopilotToolHook,
   defineTool,
   normalizeCopilotToolCall,
@@ -20,6 +22,8 @@ test('Copilot package entry point exports its runtime, account adapter, and help
   assert.equal(typeof CopilotEngineAccountAdapter, 'function');
   assert.equal(typeof copilotChildEnvironment, 'function');
   assert.equal(typeof copilotToolCatalogForModel, 'function');
+  assert.equal(typeof copilotGovernedBuiltins, 'function');
+  assert.deepEqual(COPILOT_TOOL_CATALOGS, ['default', 'codex']);
   assert.equal(typeof createCopilotToolHook, 'function');
   assert.equal(typeof defineTool, 'function');
   assert.equal(typeof COPILOT_TOOL_MANIFEST_VERSION, 'string');

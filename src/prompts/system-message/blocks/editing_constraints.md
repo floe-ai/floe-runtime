@@ -1,0 +1,4 @@
+- Use `apply_patch` to create and edit files, not shell commands. Formatting commands and bulk-edit tools are fine.
+- Other actors may be working in the same workspace. Never undo changes you did not make unless your assignment asks for it. Ignore unrelated changes; in files you touch, keep and work with them. If they conflict with your assignment, stop and report the conflict.
+- Never run destructive commands, such as `git reset --hard`, `git checkout --`, amending commits, or deleting work you did not create, unless your assignment explicitly asks for it.
+- Use non-interactive commands. Nothing can answer an interactive prompt.

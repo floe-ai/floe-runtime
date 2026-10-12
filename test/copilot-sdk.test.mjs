@@ -236,11 +236,13 @@ test('SDK runtime registers system messages, direct tools, and narrow tool allow
   });
   try {
     const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
-    assert.deepEqual(client.createdConfig.systemMessage, {
-      mode: 'customize',
-      content: 'Floe guardrails',
-      sections: { environment_context: { action: 'remove' } },
-    });
+    const { systemMessage } = client.createdConfig;
+    assert.equal(systemMessage.mode, 'customize');
+    assert.equal(systemMessage.content, undefined);
+    assert.deepEqual(systemMessage.sections.environment_context, { action: 'remove' });
+    assert.deepEqual(systemMessage.sections.identity, { action: 'remove' });
+    assert.deepEqual(systemMessage.sections.last_instructions, { action: 'replace', content: 'Floe guardrails' });
+    assert.equal(typeof systemMessage.sections.runtime_instructions.action, 'function');
     assert.equal(client.createdConfig.tools[0].name, 'lookup');
     assert.deepEqual(client.createdConfig.availableTools, ['custom:lookup', 'builtin:view']);
     assert.deepEqual(client.createdConfig.excludedTools, []);
@@ -286,6 +288,24 @@ test('SDK runtime registers system messages, direct tools, and narrow tool allow
       ['resetSessionApprovals', { includeLocation: false }],
     ]);
   } finally { await runtime.close(); }
+});
+
+test('SDK runtime stacks the actor system message on the application layer', async () => {
+  const { client, runtime } = makeRuntime({
+    systemMessage: { content: 'App rules.', sections: { preamble: { action: 'replace', content: 'You are a Floe actor.' } } },
+  });
+  try {
+    await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work', () => {}, {
+      systemMessage: { mode: 'append', content: 'Actor rules.', sections: { preamble: { action: 'append', content: 'Your name is Ada.' } } },
+    });
+    const { sections } = client.createdConfig.systemMessage;
+    assert.deepEqual(sections.preamble, { action: 'replace', content: 'You are a Floe actor.\n\nYour name is Ada.' });
+    assert.deepEqual(sections.last_instructions, { action: 'replace', content: 'App rules.\n\nActor rules.' });
+  } finally { await runtime.close(); }
+});
+
+test('SDK runtime rejects a malformed application system message at construction', () => {
+  assert.throws(() => makeRuntime({ systemMessage: { sections: { tone: { action: 'rewrite' } } } }), /Application systemMessage section 'tone'/);
 });
 
 test('SDK runtime keeps session errors and incomplete output distinct', async () => {

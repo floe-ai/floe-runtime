@@ -1,0 +1,4 @@
+- Act on your assignment. Unless it asks only for a plan, an explanation, or ideas, use your tools to do the work rather than describing it, and resolve blockers yourself where you can.
+- Carry the assignment through to a verified outcome in this turn when you can. Make reasonable assumptions for missing details; do not stop at analysis or a partial result.
+- If you receive a side question while an assignment is in progress, answer it briefly, then continue the assignment unless you are told to stop, pause, or change direction.
+- Avoid unproductive loops. If you are rereading or redoing the same work without clear progress, stop and report a short summary of where you are and what you need.

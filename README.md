@@ -145,6 +145,53 @@ in progress, then enumerates and terminates background terminals.
 `retire()` calls `thread/unsubscribe`, falling back to local-only retirement
 if that optional API is unavailable.
 
+### System message layers
+
+Floe owns every actor's system message. It is built from three layers, applied
+in order:
+
+1. **Runtime base**: one Markdown file per section in
+   `src/prompts/system-message/` (format in that folder's `README.md`), loaded
+   by `floeBaseSystemMessage()` in `src/system-message.mjs`.
+   Removes the vendor's coding-assistant identity, tone, environment, code-change
+   rules, guidelines, closing instructions and custom-instruction sections.
+   Replaces safety with Floe text. Keeps tool and runtime guidance but strips
+   CLI-product blocks: the vendor session folder, git co-author trailer,
+   progress-update habits, `gh` preference and code-search advice. Copilot
+   adds extra persistence and editing-safety blocks only for models that need
+   more guidance (the GPT/codex tool set); Floe keeps that targeting but
+   rewrites both blocks in its own words (`blocks/` in the same folder).
+2. **Application layer**: the runtime constructor's `systemMessage`.
+3. **Actor layer**: `run()`'s `settings.systemMessage`.
+
+A layer is a string (extra content) or
+`{ mode?, content?, sections?: { [id]: { action, content? } } }`. Section ids
+are `SYSTEM_MESSAGE_SECTIONS`: `preamble`, `tone`, `tool_efficiency`,
+`identity` (group of the first three), `code_change_rules`, `guidelines`,
+`safety`, `environment_context`, `tool_instructions`, `custom_instructions`,
+`runtime_instructions`, `last_instructions`. Each layer can change any section,
+including ones the base or an earlier layer changed:
+
+| Action | Effect |
+|---|---|
+| `replace` | Section becomes `content`; earlier appends and prepends are dropped. |
+| `remove` | Section is removed. |
+| `append` / `prepend` | `content` is added after / before the section's current text. |
+| `preserve` | Restores the vendor's original text, undoing base and earlier changes. |
+
+`content` from each layer is added at the end of the message, application
+first. `mode: 'replace'` removes every section and earlier content, so that
+layer's content is the whole message. `mode: 'append'` and `'customize'` only
+add content and sections. Malformed layers throw a `TypeError` naming the layer.
+The message is fixed when a session is created or resumed; a continued live
+session keeps the message it started with.
+
+Copilot (`capabilities().systemMessageSections === true`) applies every action.
+Codex cannot address its own sections (`systemMessageSections === false`): the
+text that layers add is sent, in section order, as `thread/start`
+`developerInstructions`, which Codex inserts as a developer message after its
+own instructions. Removals and the runtime base do not apply on Codex.
+
 ### CopilotRuntime (`src/adapters/copilot.mjs`)
 
 Copilot uses the official `@github/copilot-sdk@1.0.19` and its bundled runtime.
@@ -160,13 +207,12 @@ may legitimately run longer; the overall turn timeout still applies.
 
 `session.error`, model-call failures, missing final messages, aborted turns,
 and incomplete structured output are reported as distinct failures.
-`systemMessage` uses the SDK append/customize form so SDK guardrails remain
-active. The client uses normal SDK mode so the OS credential store remains
+`systemMessage` is built from Floe's layers (see "System message layers").
+The client uses normal SDK mode so the OS credential store remains
 available, while every optional capability previously disabled by empty mode
 is disabled explicitly. Sessions use an exact `availableTools` allowlist.
 File hooks, config and instruction discovery, tool search, skills, memory,
 MCP, extensions, host Git operations, and vendor permission state are disabled.
-The SDK-managed `environment_context` system-message section is removed.
 Construction requires a Floe-owned `clientOptions.baseDirectory`; an invalid
 runtime is rejected immediately instead of failing when its first turn starts.
 It also requires `expectedAccount` from the readiness result. Before a session
@@ -617,6 +663,9 @@ retirement events - never a timer (see "No polling, anywhere").
   spend cap, concurrency queueing, mixed-backend unified events) built on top
   of plain `Runtime` instances - see "Fleet: the swarm substrate" above.
 - `src/errors.mjs` - `RuntimeFault`, `check()`, `id()`, `digest()`, `redact()`.
+- `src/system-message.mjs` - the Floe runtime base system message, layer
+  merging, and rendering for section-aware (Copilot) and append-only (Codex)
+  backends - see "System message layers" above.
 
 
 ## Testing

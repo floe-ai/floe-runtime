@@ -60,6 +60,8 @@ lines.on('line', line => {
         id: 'thread_' + process.pid + '_' + (++serial), turns: [], status: { type: 'idle' },
         ephemeral: params.ephemeral === true, cwd: params.cwd, model: params.model || 'fixture-model',
         updatedAt: new Date().toISOString(),
+        // Echoed for tests only; real Codex does not return it on the thread.
+        developerInstructions: params.developerInstructions ?? null,
       };
       threads.set(thread.id, thread);
       return reply(message.id, { thread, model: thread.model, reasoningEffort: 'medium' });

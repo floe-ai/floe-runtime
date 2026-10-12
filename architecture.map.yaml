@@ -31,6 +31,8 @@ system:
             - src/prompts/system-message/last_instructions.md
             - src/prompts/system-message/preamble.md
             - src/prompts/system-message/README.md
+            - src/prompts/system-message/blocks/autonomy_and_persistence.md
+            - src/prompts/system-message/blocks/editing_constraints.md
             - src/prompts/system-message/runtime_instructions.md
             - src/prompts/system-message/safety.md
             - src/prompts/system-message/tone.md
@@ -71,6 +73,8 @@ system:
                 - src/prompts/system-message/last_instructions.md
                 - src/prompts/system-message/preamble.md
                 - src/prompts/system-message/README.md
+                - src/prompts/system-message/blocks/autonomy_and_persistence.md
+                - src/prompts/system-message/blocks/editing_constraints.md
                 - src/prompts/system-message/runtime_instructions.md
                 - src/prompts/system-message/safety.md
                 - src/prompts/system-message/tone.md

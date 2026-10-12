@@ -12,6 +12,7 @@ import {
   mergeSystemMessageLayers,
   parseSectionFile,
   withoutTaggedBlocks,
+  withRewrittenBlocks,
 } from '../src/system-message.mjs';
 import { CodexRuntime } from '../src/adapters/codex.mjs';
 
@@ -115,6 +116,27 @@ test('append-only rendering keeps layer text in section order and ignores remova
 
 test('withoutTaggedBlocks leaves unknown tags and plain text alone', () => {
   assert.equal(withoutTaggedBlocks('keep\n<a>x</a>\n\n\n<b>y</b>', ['a']), 'keep\n\n<b>y</b>');
+});
+
+test('vendor blocks for models that need more guidance get Floe wording; absent blocks stay absent', () => {
+  const { sections } = copilot();
+  const codexVendor = `${RUNTIME_VENDOR_TEXT}
+
+<editing_constraints>
+- Never use destructive commands without explicit user request/approval.
+</editing_constraints>
+
+<autonomy_and_persistence>
+- Bias to action: unless the user asks for a plan...
+</autonomy_and_persistence>`;
+  const runtime = sections.runtime_instructions.action(codexVendor);
+  const block = tag => readFileSync(path.join(BASE_SYSTEM_MESSAGE_DIR, 'blocks', `${tag}.md`), 'utf8').replace(/\r\n/g, '\n').trim();
+  assert.ok(runtime.includes(`<editing_constraints>\n${block('editing_constraints')}\n</editing_constraints>`));
+  assert.ok(runtime.includes(`<autonomy_and_persistence>\n${block('autonomy_and_persistence')}\n</autonomy_and_persistence>`));
+  assert.doesNotMatch(runtime, /the user|user request|secret/);
+  const standard = sections.runtime_instructions.action(RUNTIME_VENDOR_TEXT);
+  assert.doesNotMatch(standard, /editing_constraints|autonomy_and_persistence/);
+  assert.equal(withRewrittenBlocks('<a>old</a> and <a>old</a>', { a: 'new $& text' }), '<a>\nnew $& text\n</a> and <a>\nnew $& text\n</a>');
 });
 
 test('every base section file is a known section with a reason', () => {

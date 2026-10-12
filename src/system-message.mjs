@@ -27,6 +27,7 @@ const CONTENT_ACTIONS = new Set(['replace', 'append', 'prepend']);
 const BASE_ACTIONS = new Set(['remove', 'replace', 'vendor']);
 
 export const BASE_SYSTEM_MESSAGE_DIR = fileURLToPath(new URL('./prompts/system-message/', import.meta.url));
+const BLOCKS_DIR = join(BASE_SYSTEM_MESSAGE_DIR, 'blocks');
 
 /** Parses a section file: a `---` front-matter block of `key: value` lines and `key:` lists of `- item`, then the body. */
 export function parseSectionFile(source, file) {
@@ -47,16 +48,32 @@ export function parseSectionFile(source, file) {
   return { fields, body: match[2].trim() };
 }
 
+function readBlock(tag, file) {
+  let body;
+  try {
+    body = readFileSync(join(BLOCKS_DIR, `${tag}.md`), 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+  } catch {
+    throw new TypeError(`${file} rewrites '${tag}' but blocks/${tag}.md is missing.`);
+  }
+  if (!body) throw new TypeError(`blocks/${tag}.md is empty.`);
+  return body;
+}
+
 function baseSectionFromFile(file) {
   const { fields, body } = parseSectionFile(readFileSync(join(BASE_SYSTEM_MESSAGE_DIR, file), 'utf8'), file);
-  const { action, strip = [] } = fields;
+  const { action, strip = [], rewrite = [] } = fields;
   if (!BASE_ACTIONS.has(action)) throw new TypeError(`${file} action must be remove, replace or vendor.`);
-  if (action !== 'vendor' && strip.length) throw new TypeError(`${file} may only list strip blocks with action: vendor.`);
+  if (action !== 'vendor' && (strip.length || rewrite.length)) {
+    throw new TypeError(`${file} may only list strip or rewrite blocks with action: vendor.`);
+  }
+  if (rewrite.some(tag => strip.includes(tag))) throw new TypeError(`${file} cannot both strip and rewrite the same block.`);
   if (action === 'remove' && body) throw new TypeError(`${file} has action: remove, so its body must be empty.`);
   if (action === 'replace' && !body) throw new TypeError(`${file} has action: replace but no body.`);
   if (action === 'remove') return removed();
   if (action === 'replace') return { source: 'text', text: body, before: [], after: [] };
-  return vendor(strip.length ? current => withoutTaggedBlocks(current, strip) : undefined);
+  const replacements = Object.fromEntries(rewrite.map(tag => [tag, readBlock(tag, file)]));
+  if (!strip.length && !rewrite.length) return vendor();
+  return vendor(current => withRewrittenBlocks(withoutTaggedBlocks(current, strip), replacements));
 }
 
 /** Loads the runtime base from one Markdown file per section; README.md documents the format. */
@@ -84,6 +101,19 @@ export function withoutTaggedBlocks(text, tags) {
     result = result.replace(new RegExp(`<${name}>[\\s\\S]*?</${name}>`, 'g'), '');
   }
   return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Replaces the body of each present `<tag>...</tag>` block with Floe text.
+ * Absent blocks stay absent, so the vendor still decides which models get them.
+ */
+export function withRewrittenBlocks(text, replacements) {
+  let result = text;
+  for (const [tag, body] of Object.entries(replacements)) {
+    const name = escapeRegExp(tag);
+    result = result.replace(new RegExp(`<${name}>[\\s\\S]*?</${name}>`, 'g'), () => `<${tag}>\n${body}\n</${tag}>`);
+  }
+  return result;
 }
 
 /** The Floe runtime base, as written in src/prompts/system-message/. */

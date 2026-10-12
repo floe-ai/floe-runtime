@@ -157,7 +157,10 @@ in order:
    rules, guidelines, closing instructions and custom-instruction sections.
    Replaces safety with Floe text. Keeps tool and runtime guidance but strips
    CLI-product blocks: the vendor session folder, git co-author trailer,
-   progress-update habits, `gh` preference and code-search advice.
+   progress-update habits, `gh` preference and code-search advice. Copilot
+   adds extra persistence and editing-safety blocks only for models that need
+   more guidance (the GPT/codex tool set); Floe keeps that targeting but
+   rewrites both blocks in its own words (`blocks/` in the same folder).
 2. **Application layer**: the runtime constructor's `systemMessage`.
 3. **Actor layer**: `run()`'s `settings.systemMessage`.
 

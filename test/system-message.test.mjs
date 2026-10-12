@@ -2,11 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
 import {
+  BASE_SYSTEM_MESSAGE_DIR,
   appendedSystemMessage,
   copilotSystemMessage,
   floeBaseSystemMessage,
+  loadBaseSections,
   mergeSystemMessageLayers,
+  parseSectionFile,
   withoutTaggedBlocks,
 } from '../src/system-message.mjs';
 import { CodexRuntime } from '../src/adapters/codex.mjs';
@@ -111,6 +115,23 @@ test('append-only rendering keeps layer text in section order and ignores remova
 
 test('withoutTaggedBlocks leaves unknown tags and plain text alone', () => {
   assert.equal(withoutTaggedBlocks('keep\n<a>x</a>\n\n\n<b>y</b>', ['a']), 'keep\n\n<b>y</b>');
+});
+
+test('every base section file is a known section with a reason', () => {
+  const files = readdirSync(BASE_SYSTEM_MESSAGE_DIR).filter(name => name.endsWith('.md') && name !== 'README.md');
+  assert.ok(files.length > 0);
+  for (const file of files) {
+    const { fields } = parseSectionFile(readFileSync(path.join(BASE_SYSTEM_MESSAGE_DIR, file), 'utf8'), file);
+    assert.ok(fields.reason, `${file} needs a reason`);
+  }
+  assert.deepEqual(Object.keys(loadBaseSections()).sort(), files.map(file => file.slice(0, -3)).sort());
+});
+
+test('section file parsing reads fields, lists and body, and rejects missing front matter', () => {
+  const parsed = parseSectionFile('\uFEFF---\r\naction: vendor\r\nreason: Why.\r\nstrip:\r\n  - a\r\n  - b\r\n---\r\n\r\nBody text.\r\n', 'x.md');
+  assert.deepEqual(parsed, { fields: { action: 'vendor', reason: 'Why.', strip: ['a', 'b'] }, body: 'Body text.' });
+  assert.throws(() => parseSectionFile('no front matter', 'x.md'), /x\.md must start with/);
+  assert.throws(() => parseSectionFile('---\nnot a field\n---\n', 'x.md'), /unreadable front-matter line/);
 });
 
 test('Codex receives layered text as developer instructions on a new thread', async () => {

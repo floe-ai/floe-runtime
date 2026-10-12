@@ -150,7 +150,9 @@ if that optional API is unavailable.
 Floe owns every actor's system message. It is built from three layers, applied
 in order:
 
-1. **Runtime base** (`floeBaseSystemMessage()` in `src/system-message.mjs`).
+1. **Runtime base**: one Markdown file per section in
+   `src/prompts/system-message/` (format in that folder's `README.md`), loaded
+   by `floeBaseSystemMessage()` in `src/system-message.mjs`.
    Removes the vendor's coding-assistant identity, tone, environment, code-change
    rules, guidelines, closing instructions and custom-instruction sections.
    Replaces safety with Floe text. Keeps tool and runtime guidance but strips

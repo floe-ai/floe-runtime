@@ -23,6 +23,19 @@ system:
             - src/runtime.mjs
             - src/schema.mjs
             - src/session-reuse.mjs
+            - src/prompts/system-message/code_change_rules.md
+            - src/prompts/system-message/custom_instructions.md
+            - src/prompts/system-message/environment_context.md
+            - src/prompts/system-message/guidelines.md
+            - src/prompts/system-message/identity.md
+            - src/prompts/system-message/last_instructions.md
+            - src/prompts/system-message/preamble.md
+            - src/prompts/system-message/README.md
+            - src/prompts/system-message/runtime_instructions.md
+            - src/prompts/system-message/safety.md
+            - src/prompts/system-message/tone.md
+            - src/prompts/system-message/tool_efficiency.md
+            - src/prompts/system-message/tool_instructions.md
             - src/system-message.mjs
             - test/events.test.mjs
             - test/fleet.test.mjs
@@ -50,6 +63,19 @@ system:
                 - src/runtime.mjs
                 - src/schema.mjs
                 - src/session-reuse.mjs
+                - src/prompts/system-message/code_change_rules.md
+                - src/prompts/system-message/custom_instructions.md
+                - src/prompts/system-message/environment_context.md
+                - src/prompts/system-message/guidelines.md
+                - src/prompts/system-message/identity.md
+                - src/prompts/system-message/last_instructions.md
+                - src/prompts/system-message/preamble.md
+                - src/prompts/system-message/README.md
+                - src/prompts/system-message/runtime_instructions.md
+                - src/prompts/system-message/safety.md
+                - src/prompts/system-message/tone.md
+                - src/prompts/system-message/tool_efficiency.md
+                - src/prompts/system-message/tool_instructions.md
                 - src/system-message.mjs
                 - test/events.test.mjs
                 - test/fleet.test.mjs

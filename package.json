@@ -19,6 +19,7 @@
   },
   "files": [
     "src",
+    "docs/copilot-tools.md",
     "README.md"
   ],
   "scripts": {

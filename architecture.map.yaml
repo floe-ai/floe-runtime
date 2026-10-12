@@ -112,6 +112,7 @@ system:
           name: Copilot SDK Adapter
           intent: Owns the official Copilot SDK integration and its public contract.
           paths:
+            - docs/copilot-tools.md
             - src/adapters/copilot.mjs
             - src/adapters/copilot.d.mts
             - src/adapters/copilot-account.mjs
@@ -119,6 +120,7 @@ system:
             - test/copilot-account.test.mjs
             - test/copilot-before-tool-use.test.mjs
             - test/copilot-sdk.test.mjs
+            - test/copilot-tools-doc.test.mjs
             - test/fake-copilot-sdk.mjs
             - test-smoke/copilot-sdk.smoke.test.mjs
             - test-smoke/copilot-tool-gate.smoke.test.mjs
@@ -129,6 +131,7 @@ system:
               name: Main
               intent: SDK adapter implementation and contract tests.
               paths:
+                - docs/copilot-tools.md
                 - src/adapters/copilot.mjs
                 - src/adapters/copilot.d.mts
                 - src/adapters/copilot-account.mjs
@@ -136,6 +139,7 @@ system:
                 - test/copilot-account.test.mjs
                 - test/copilot-before-tool-use.test.mjs
                 - test/copilot-sdk.test.mjs
+                - test/copilot-tools-doc.test.mjs
                 - test/fake-copilot-sdk.mjs
                 - test-smoke/copilot-sdk.smoke.test.mjs
                 - test-smoke/copilot-tool-gate.smoke.test.mjs

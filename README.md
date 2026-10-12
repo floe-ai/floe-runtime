@@ -235,6 +235,9 @@ one catalog's expected set. Vendor sub-agent tools (`task`, `read_agent`,
 absent. Actors delegate through Floe, not a hidden vendor fleet.
 Use `copilotGovernedBuiltins(platform)` to list every governed built-in;
 `copilotToolCatalogForModel` is deprecated and returns the same list.
+[docs/copilot-tools.md](docs/copilot-tools.md) lists every allowed tool, every
+blocked Copilot tool and every switched-off Copilot feature, with what each
+does.
 
 Every vendor built-in runs through one in-process SDK `onPreToolUse` hook
 before side effects. The hook calls `permissionPolicy` for every call. With no

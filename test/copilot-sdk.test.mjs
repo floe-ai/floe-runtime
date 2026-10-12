@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import {
   COPILOT_TOOL_MANIFEST_VERSION,
   CopilotRuntime,
+  copilotGovernedBuiltins,
   copilotToolCatalogForModel,
   normalizeCopilotToolCall,
   resolveCopilotToolSelection,
 } from '../src/adapters/copilot.mjs';
 import { CopilotRuntime as PublicCopilotRuntime } from 'floe-runtime/adapters/copilot';
 import { FakeCopilotClient } from './fake-copilot-sdk.mjs';
+import { prepareCopilotToolSession } from '../src/adapters/copilot-tools.mjs';
 
 const SCHEMA = {
   type: 'object',
@@ -536,26 +538,19 @@ test('SDK tool selection is exact and model-aware without vendor agent tools', (
     () => resolveCopilotToolSelection({ availableTools: ['builtin:sql'] }),
     error => error.code === 'copilot_tool_selection_invalid',
   );
-  assert.deepEqual(copilotToolCatalogForModel('claude-sonnet-5'), [
-    'create', 'edit', 'glob', 'grep', LIST_SHELL_TOOL, SHELL_TOOL,
-    READ_SHELL_TOOL, STOP_SHELL_TOOL, 'view', 'web_fetch',
+  assert.deepEqual(copilotGovernedBuiltins(), [
+    'apply_patch', 'create', 'edit', 'glob', 'grep', LIST_SHELL_TOOL, SHELL_TOOL,
+    READ_SHELL_TOOL, 'rg', STOP_SHELL_TOOL, 'view', 'web_fetch',
   ].sort());
-  assert.deepEqual(copilotToolCatalogForModel('gpt-5.1-codex'), [
-    'apply_patch', 'glob', LIST_SHELL_TOOL, SHELL_TOOL, READ_SHELL_TOOL,
-    'rg', STOP_SHELL_TOOL, 'view', 'web_fetch',
-  ].sort());
-  const defaultWrite = resolveCopilotToolSelection({
-    model: 'claude-sonnet-5',
-    availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch'],
+  assert.deepEqual(copilotToolCatalogForModel('claude-sonnet-5'), copilotGovernedBuiltins());
+  const write = resolveCopilotToolSelection({
+    availableTools: ['builtin:view', 'builtin:create', 'builtin:edit', 'builtin:apply_patch'],
   });
-  assert.deepEqual(defaultWrite.filters, ['builtin:create', 'builtin:edit']);
-  const codexWrite = resolveCopilotToolSelection({
-    model: 'gpt-5.1-codex',
-    availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch'],
-  });
-  assert.deepEqual(codexWrite.filters, ['builtin:apply_patch']);
-  assert.equal(copilotToolCatalogForModel().includes('task'), false);
-  assert.equal(copilotToolCatalogForModel().includes('skill'), false);
+  assert.deepEqual(write.filters, ['builtin:view', 'builtin:create', 'builtin:edit', 'builtin:apply_patch']);
+  assert.deepEqual(write.expectedByCatalog.default, ['create', 'edit', 'view']);
+  assert.deepEqual(write.expectedByCatalog.codex, ['apply_patch', 'view']);
+  assert.equal(copilotGovernedBuiltins().includes('task'), false);
+  assert.equal(copilotGovernedBuiltins().includes('skill'), false);
   assert.throws(() => new CopilotRuntime({
     clientOptions: { baseDirectory: 'C:\\floe-session' },
     expectedAccount: { label: 'octocat' },
@@ -596,7 +591,6 @@ test('SDK pre-tool normalization preserves full shell and write facts', () => {
 
 test('SDK apply_patch normalization parses every path and fails closed on malformed input', () => {
   const selection = resolveCopilotToolSelection({
-    model: 'gpt-5.1-codex',
     availableTools: ['builtin:apply_patch'],
   });
   const patch = [
@@ -725,23 +719,52 @@ test('SDK runtime refuses an unknown model change without changing the live sess
   } finally { await runtime.close(); }
 });
 
-test('SDK model changes replace the exact tool catalog and its hook together', async () => {
-  const { client, runtime } = makeRuntime({
-    model: 'claude-sonnet-5',
-    availableTools: ['builtin:create', 'builtin:edit', 'builtin:apply_patch', 'builtin:grep', 'builtin:rg'],
-  });
+test('SDK model changes keep the exact allowlist, replace the hook, and revalidate the catalog', async () => {
+  const requested = ['builtin:create', 'builtin:edit', 'builtin:apply_patch', 'builtin:grep', 'builtin:rg'];
+  const { client, runtime } = makeRuntime({ model: 'claude-sonnet-5', availableTools: requested });
+  const reported = async sessionId => (await client.sessions.get(sessionId).rpc.tools.getCurrentMetadata())
+    .tools.map(tool => tool.name).sort();
   try {
     const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
-    assert.deepEqual(client.sessions.get(result.sessionId).config.availableTools, [
-      'builtin:create', 'builtin:edit', 'builtin:grep',
-    ]);
+    assert.deepEqual(client.sessions.get(result.sessionId).config.availableTools, requested);
+    assert.deepEqual(await reported(result.sessionId), ['create', 'edit', 'grep']);
     const oldHook = client.sessions.get(result.sessionId).config.hooks.onPreToolUse;
-    await runtime.setModel(result.sessionId, 'gpt-5.1-codex');
-    assert.deepEqual(client.sessions.get(result.sessionId).config.availableTools, [
-      'builtin:apply_patch', 'builtin:rg',
-    ]);
+    // gpt-5.4 has no "codex" in its name but Copilot gives it the codex catalog.
+    await runtime.setModel(result.sessionId, 'gpt-5.4');
+    assert.deepEqual(client.sessions.get(result.sessionId).config.availableTools, requested);
+    assert.deepEqual(await reported(result.sessionId), ['apply_patch', 'rg']);
     assert.notEqual(client.sessions.get(result.sessionId).config.hooks.onPreToolUse, oldHook);
   } finally { await runtime.close(); }
+});
+
+test('SDK session catalog is read from the tools Copilot reports, not the model name', async () => {
+  const selection = resolveCopilotToolSelection({
+    availableTools: ['builtin:view', 'builtin:grep', 'builtin:rg', 'builtin:edit', 'builtin:apply_patch'],
+  });
+  const fakeSession = names => ({
+    rpc: {
+      permissions: {
+        configure: async () => ({}),
+        setApproveAll: async () => ({}),
+        setMode: async () => ({ success: true, mode: 'manual' }),
+        resetSessionApprovals: async () => ({}),
+      },
+      tools: {
+        initializeAndValidate: async () => ({}),
+        getCurrentMetadata: async () => ({ tools: names.map(name => ({ name })) }),
+      },
+    },
+  });
+  const codex = await prepareCopilotToolSession(fakeSession(['view', 'rg', 'apply_patch']), selection, 'C:\\work');
+  assert.equal(codex.catalog, 'codex');
+  const standard = await prepareCopilotToolSession(fakeSession(['view', 'grep', 'edit']), selection, 'C:\\work');
+  assert.equal(standard.catalog, 'default');
+  await assert.rejects(
+    prepareCopilotToolSession(fakeSession(['view', 'grep', 'apply_patch']), selection, 'C:\\work'),
+    error => error.code === 'copilot_tool_catalog_drift' && error.message.includes('codex [apply_patch, rg, view]'),
+  );
+  const sharedOnly = resolveCopilotToolSelection({ availableTools: ['builtin:view'] });
+  assert.equal((await prepareCopilotToolSession(fakeSession(['view']), sharedOnly, 'C:\\work')).catalog, null);
 });
 
 test('SDK rejects invalid tool-policy timeouts before creating a session', () => {

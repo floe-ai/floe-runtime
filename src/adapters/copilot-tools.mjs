@@ -73,34 +73,32 @@ function requireString(value, field, toolName) {
   return value;
 }
 
-function catalogForModel(model) {
-  return typeof model === 'string' && /(?:^|[-_.])codex(?:$|[-_.])/i.test(model)
-    ? CODEX_CATALOG
-    : DEFAULT_CATALOG;
+export const COPILOT_TOOL_CATALOGS = Object.freeze([DEFAULT_CATALOG, CODEX_CATALOG]);
+
+/**
+ * Every governed built-in for the platform, across all catalogs. Copilot picks
+ * the catalog per model and publishes no rule for it, so Floe requests every
+ * governed built-in and learns the catalog from the session's reported tools.
+ */
+export function copilotGovernedBuiltins(platform = process.platform) {
+  return Object.freeze(Object.keys(COPILOT_BUILTIN_TOOL_MANIFEST[platform] || {}).sort());
 }
 
-export function copilotToolCatalogForModel(model, platform = process.platform) {
-  const manifest = COPILOT_BUILTIN_TOOL_MANIFEST[platform] || {};
-  const catalog = catalogForModel(model);
-  return Object.freeze(
-    Object.keys(manifest)
-      .filter(name => manifest[name].catalogs.includes(catalog))
-      .sort(),
-  );
+/** @deprecated The model does not decide the catalog; use copilotGovernedBuiltins. */
+export function copilotToolCatalogForModel(_model, platform = process.platform) {
+  return copilotGovernedBuiltins(platform);
 }
 
 export function resolveCopilotToolSelection({
   tools = [],
   availableTools,
   excludedTools,
-  model,
   platform = process.platform,
 } = {}) {
   if (excludedTools?.length) {
     throw fault('copilot_tool_selection_invalid', 'Copilot uses an exact allowlist; excludedTools is not supported.');
   }
   const manifest = COPILOT_BUILTIN_TOOL_MANIFEST[platform] || {};
-  const activeBuiltins = new Set(copilotToolCatalogForModel(model, platform));
   const customNames = new Set();
   for (const tool of tools) {
     if (customNames.has(tool.name)) {
@@ -113,7 +111,7 @@ export function resolveCopilotToolSelection({
   }
 
   const requested = availableTools ?? [
-    ...activeBuiltins,
+    ...copilotGovernedBuiltins(platform),
     ...customNames,
   ].map(name => `${customNames.has(name) ? 'custom' : 'builtin'}:${name}`);
   if (!Array.isArray(requested)) {
@@ -121,7 +119,6 @@ export function resolveCopilotToolSelection({
   }
 
   const filters = [];
-  const expectedNames = new Set();
   const builtins = new Map();
   for (const entry of requested) {
     if (typeof entry !== 'string' || !entry.trim() || entry.includes('*')) {
@@ -148,20 +145,26 @@ export function resolveCopilotToolSelection({
       if (!builtIn) {
         throw fault('copilot_tool_selection_invalid', `Copilot built-in '${name}' is not governed by manifest '${COPILOT_TOOL_MANIFEST_VERSION}'.`);
       }
-      if (!activeBuiltins.has(name)) continue;
       builtins.set(name, builtIn);
     }
     const qualified = `${source}:${name}`;
     if (!filters.includes(qualified)) filters.push(qualified);
-    expectedNames.add(name);
   }
+
+  const requestedCustoms = [...customNames].filter(name => filters.includes(`custom:${name}`));
+  const expectedByCatalog = Object.fromEntries(COPILOT_TOOL_CATALOGS.map(catalog => [
+    catalog,
+    Object.freeze([
+      ...[...builtins].filter(([, builtIn]) => builtIn.catalogs.includes(catalog)).map(([name]) => name),
+      ...requestedCustoms,
+    ].sort()),
+  ]));
 
   return Object.freeze({
     filters: Object.freeze(filters),
-    expectedNames: Object.freeze([...expectedNames].sort()),
+    expectedByCatalog: Object.freeze(expectedByCatalog),
     builtins,
     customNames: Object.freeze([...customNames].sort()),
-    catalog: catalogForModel(model),
     manifestVersion: COPILOT_TOOL_MANIFEST_VERSION,
   });
 }
@@ -467,12 +470,18 @@ export async function prepareCopilotToolSession(session, selection, workingDirec
   }
 
   const actual = [...new Set(metadata.tools.map(tool => tool?.name).filter(name => typeof name === 'string'))].sort();
-  const expected = [...selection.expectedNames];
-  if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
+  const sameNames = expected => expected.length === actual.length && expected.every((name, index) => name === actual[index]);
+  const matched = COPILOT_TOOL_CATALOGS.filter(catalog => sameNames(selection.expectedByCatalog[catalog]));
+  if (!matched.length) {
+    const expected = COPILOT_TOOL_CATALOGS
+      .map(catalog => `${catalog} [${selection.expectedByCatalog[catalog].join(', ')}]`)
+      .join(' or ');
     throw fault(
       'copilot_tool_catalog_drift',
-      `Copilot tool catalog drifted from '${selection.manifestVersion}/${selection.catalog}': expected [${expected.join(', ')}], received [${actual.join(', ')}].`,
+      `Copilot tool catalog drifted from '${selection.manifestVersion}': expected ${expected}, received [${actual.join(', ')}].`,
     );
   }
-  return { manifestVersion: selection.manifestVersion, catalog: selection.catalog, tools: actual };
+  // Shared-only allowlists match every catalog, so the catalog is not observable.
+  const catalog = matched.length === 1 ? matched[0] : null;
+  return { manifestVersion: selection.manifestVersion, catalog, tools: actual };
 }

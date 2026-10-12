@@ -208,22 +208,28 @@ export const COPILOT_BUILTIN_TOOL_MANIFEST: Readonly<Record<string, Readonly<Rec
   catalogs: readonly string[];
 }>>>>>;
 
+export type CopilotToolCatalog = 'default' | 'codex';
+export const COPILOT_TOOL_CATALOGS: readonly CopilotToolCatalog[];
+
 export interface CopilotToolSelection {
   filters: readonly string[];
-  expectedNames: readonly string[];
+  /** Exact tool names the session must report, per catalog Copilot may pick. */
+  expectedByCatalog: Readonly<Record<CopilotToolCatalog, readonly string[]>>;
   builtins: ReadonlyMap<string, Readonly<{ operationId: string; catalogs: readonly string[] }>>;
   customNames: readonly string[];
-  catalog: string;
   manifestVersion: string;
 }
 
+/** Every governed built-in for the platform, across all catalogs. */
+export function copilotGovernedBuiltins(platform?: NodeJS.Platform): readonly string[];
+
+/** @deprecated The model does not decide the catalog; use copilotGovernedBuiltins. */
 export function copilotToolCatalogForModel(model?: string, platform?: NodeJS.Platform): readonly string[];
 
 export function resolveCopilotToolSelection(options?: {
   tools?: HostTool[];
   availableTools?: string[];
   excludedTools?: string[];
-  model?: string;
   platform?: NodeJS.Platform;
 }): CopilotToolSelection;
 

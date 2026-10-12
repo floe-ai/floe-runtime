@@ -1,3 +1,11 @@
+// Mirrors live CLI 1.0.95: GPT models get the codex tool set, others the default set.
+const CODEX_ONLY = new Set(['rg', 'apply_patch']);
+const DEFAULT_ONLY = new Set(['grep', 'create', 'edit']);
+function modelCatalog(model, filters) {
+  const absent = /^gpt-/i.test(model || '') ? DEFAULT_ONLY : CODEX_ONLY;
+  return filters.filter(filter => !(filter.startsWith('builtin:') && absent.has(filter.slice(8))));
+}
+
 export class FakeCopilotSession {
   constructor(id, config, client) {
     this.sessionId = id;
@@ -16,7 +24,7 @@ export class FakeCopilotSession {
       tools: {
         initializeAndValidate: async () => ({ success: true }),
         getCurrentMetadata: async () => ({
-          tools: (client.catalogOverride || config.availableTools).map(filter => ({
+          tools: (client.catalogOverride || modelCatalog(config.model, config.availableTools)).map(filter => ({
             name: filter.includes(':') ? filter.slice(filter.indexOf(':') + 1) : filter,
             description: '',
           })),
@@ -214,6 +222,7 @@ export class FakeCopilotClient {
       { id: 'fixture-model', name: 'Fixture model' },
       { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
       { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' },
+      { id: 'gpt-5.4', name: 'GPT-5.4' },
     ];
   }
 

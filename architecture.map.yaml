@@ -23,12 +23,14 @@ system:
             - src/runtime.mjs
             - src/schema.mjs
             - src/session-reuse.mjs
+            - src/system-message.mjs
             - test/events.test.mjs
             - test/fleet.test.mjs
             - test/jsonrpc.test.mjs
             - test/package-exports.test.mjs
             - test/schema.test.mjs
             - test/session-reuse.test.mjs
+            - test/system-message.test.mjs
             - test-smoke/helpers.mjs
           writeAuthority:
             allowedModules: []
@@ -48,12 +50,14 @@ system:
                 - src/runtime.mjs
                 - src/schema.mjs
                 - src/session-reuse.mjs
+                - src/system-message.mjs
                 - test/events.test.mjs
                 - test/fleet.test.mjs
                 - test/jsonrpc.test.mjs
                 - test/package-exports.test.mjs
                 - test/schema.test.mjs
                 - test/session-reuse.test.mjs
+                - test/system-message.test.mjs
                 - test-smoke/helpers.mjs
         - id: codex-sdk
           name: Codex Adapter

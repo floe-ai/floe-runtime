@@ -108,10 +108,25 @@ export interface HostTool {
   defer?: 'auto' | 'never';
 }
 
-export type SystemMessageConfig =
-  | { mode?: 'append'; content?: string }
-  | { mode: 'customize'; content?: string; sections?: Record<string, { action: string; content?: string }> }
-  | { mode: 'replace'; content: string };
+/** Floe system-message section ids. `identity` groups preamble, tone and tool_efficiency. */
+export type SystemMessageSection =
+  | 'preamble' | 'tone' | 'tool_efficiency' | 'identity' | 'code_change_rules' | 'guidelines' | 'safety'
+  | 'environment_context' | 'tool_instructions' | 'custom_instructions' | 'runtime_instructions' | 'last_instructions';
+
+export type SystemMessageSectionOverride =
+  | { action: 'remove' | 'preserve' }
+  | { action: 'replace' | 'append' | 'prepend'; content: string };
+
+/**
+ * One system-message layer (application or actor). A string is extra content.
+ * Layers stack on the Floe runtime base: each may change any section. `replace`
+ * mode removes every section and earlier content, so its content is the whole message.
+ */
+export type SystemMessageConfig = {
+  mode?: 'append' | 'customize' | 'replace';
+  content?: string;
+  sections?: Partial<Record<SystemMessageSection | (string & {}), SystemMessageSectionOverride>>;
+};
 
 /** Reuse hint from a previous run(); pass the prior sessionId to continue it. */
 export interface RunContinuation {
@@ -331,6 +346,7 @@ export interface CopilotCapabilities extends Record<string, boolean> {
   scheduleOnce: false;
   directTools: true;
   systemMessage: true;
+  systemMessageSections: true;
 }
 
 /** Backend-neutral tool/command execution event (README: "Activity events"). */

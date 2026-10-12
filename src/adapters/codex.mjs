@@ -14,6 +14,7 @@ import { SessionRegistry, sessionKey } from '../session-reuse.mjs';
 import { extractStructuredOutput } from '../schema.mjs';
 import { codexActivityKind, codexActivityTitle } from '../activity.mjs';
 import { unsupported } from '../capabilities.mjs';
+import { appendedSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 
 // F9: `turn.error.codexErrorInfo` values confirmed (or reasonably expected as siblings) to mean "this
 // failed because of a billing/quota wall", not a genuine task failure. Only 'usageLimitExceeded' has
@@ -50,7 +51,7 @@ function isToolConfirmation(params) {
 }
 
 export class CodexRuntime extends Runtime {
-  constructor({ executable = 'codex', args = [], model, timeoutMs = 45 * 60 * 1000, permissionPolicy, defaultPermissionDecision, unhandledRequestTimeoutMs } = {}) {
+  constructor({ executable = 'codex', args = [], model, timeoutMs = 45 * 60 * 1000, systemMessage, permissionPolicy, defaultPermissionDecision, unhandledRequestTimeoutMs } = {}) {
     const env = { ...process.env, FLOE_RUNTIME_AGENT: '1' };
     delete env.CODEX_THREAD_ID;
     delete env.CODEX_SESSION_ID;
@@ -58,6 +59,8 @@ export class CodexRuntime extends Runtime {
     delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
     super({ command: executable, args: [...args, 'app-server'], env, unavailableCode: 'codex_unavailable', permissionPolicy, defaultPermissionDecision, unhandledRequestTimeoutMs });
     this.model = model;
+    this.systemMessage = systemMessage;
+    this.#developerInstructions(); // rejects a malformed application layer at construction
     this.timeoutMs = timeoutMs;
     this.turns = new Map();
     this.serverRequests = new Map();
@@ -76,6 +79,15 @@ export class CodexRuntime extends Runtime {
     this.goals = new Map();
   }
 
+  /** Codex cannot address prompt sections, so layer text is sent as developer instructions appended after Codex's own. */
+  #developerInstructions(actorLayer) {
+    const text = appendedSystemMessage(mergeSystemMessageLayers(null, [
+      { label: 'Application', value: this.systemMessage },
+      { label: 'Actor', value: actorLayer },
+    ]));
+    return text ? { developerInstructions: text } : {};
+  }
+
   /** See src/capabilities.mjs; every parity-surface method below is backed by one of these. */
   // eslint-disable-next-line class-methods-use-this
   capabilities() {
@@ -85,6 +97,8 @@ export class CodexRuntime extends Runtime {
       availableCommands: false,
       // S5/S6: no equivalent to Copilot's /fleet, /every, /after control commands has been found on Codex.
       fleetMode: false, scheduleRecurring: false, scheduleOnce: false,
+      // Layer text is appended as developer instructions; Codex cannot remove or rewrite its own sections.
+      systemMessage: true, systemMessageSections: false,
     };
   }
 
@@ -564,6 +578,7 @@ export class CodexRuntime extends Runtime {
         cwd, ephemeral, ...(model ? { model } : {}),
         approvalPolicy: permissions.approvalPolicy, approvalsReviewer: 'user', sandbox: permissions.sandbox,
         serviceName: 'floe_runtime',
+        ...this.#developerInstructions(settings.systemMessage),
       });
       // A completed request must match what the caller actually asked for - never silently accept the
       // opposite persistence mode (e.g. a caller requesting a persistent thread must never be handed an

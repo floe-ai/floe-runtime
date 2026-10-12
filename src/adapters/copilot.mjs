@@ -21,6 +21,7 @@ import {
   resolveCopilotToolSelection,
 } from './copilot-tools.mjs';
 import { copilotChildEnvironment } from './copilot-account.mjs';
+import { copilotSystemMessage, floeBaseSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
 export {
@@ -78,26 +79,11 @@ function isolatedClientOptions(clientOptions) {
   };
 }
 
-function isolatedSystemMessage(systemMessage) {
-  if (!systemMessage) {
-    return { mode: 'customize', sections: { environment_context: { action: 'remove' } } };
-  }
-  if (typeof systemMessage === 'string') {
-    return {
-      mode: 'customize',
-      content: systemMessage,
-      sections: { environment_context: { action: 'remove' } },
-    };
-  }
-  if (systemMessage.mode === 'replace') return systemMessage;
-  return {
-    ...systemMessage,
-    mode: 'customize',
-    sections: {
-      ...systemMessage.sections,
-      environment_context: { action: 'remove' },
-    },
-  };
+function layeredSystemMessage(applicationLayer, actorLayer) {
+  return copilotSystemMessage(mergeSystemMessageLayers(floeBaseSystemMessage(), [
+    { label: 'Application', value: applicationLayer },
+    { label: 'Actor', value: actorLayer },
+  ]));
 }
 
 function aggregateUsage(modelCalls, numToolCalls) {
@@ -186,6 +172,7 @@ export class CopilotRuntime extends Runtime {
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
     this.clientOptions = isolatedClientOptions(clientOptions);
     this.systemMessage = systemMessage;
+    layeredSystemMessage(systemMessage); // rejects a malformed application layer at construction
     this.tools = tools.map(normalizeTool);
     this.availableTools = availableTools;
     this.excludedTools = excludedTools;
@@ -204,7 +191,7 @@ export class CopilotRuntime extends Runtime {
       setModel: true, releaseSession: true, setMode: false, setPermissions: false, setGoal: false,
       compact: false, usage: false, steer: false, fork: false, listSessions: true, resume: true,
       streaming: true, richPrompt: true, availableCommands: false, fleetMode: false,
-      scheduleRecurring: false, scheduleOnce: false, directTools: true, systemMessage: true,
+      scheduleRecurring: false, scheduleOnce: false, directTools: true, systemMessage: true, systemMessageSections: true,
     };
   }
 
@@ -300,7 +287,6 @@ export class CopilotRuntime extends Runtime {
   }
 
   #sessionConfig(cwd, model, settings = {}, sessionId) {
-    const systemMessage = settings.systemMessage || this.systemMessage;
     const tools = [...this.tools, ...(settings.tools || [])].map(normalizeTool);
     const selection = resolveCopilotToolSelection({
       tools,
@@ -341,7 +327,7 @@ export class CopilotRuntime extends Runtime {
       memory: { enabled: false },
       mcpServers: {},
       requestExtensions: false,
-      systemMessage: isolatedSystemMessage(systemMessage),
+      systemMessage: layeredSystemMessage(this.systemMessage, settings.systemMessage),
     };
     return { config, selection };
   }

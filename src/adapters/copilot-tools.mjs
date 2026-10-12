@@ -6,7 +6,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 
-export const COPILOT_TOOL_MANIFEST_VERSION = 'copilot-cli-1.0.83-win32-linux-v4';
+export const COPILOT_TOOL_MANIFEST_VERSION = 'copilot-cli-1.0.95-win32-linux-v4';
 
 const DEFAULT_CATALOG = 'default';
 const CODEX_CATALOG = 'codex';

@@ -214,7 +214,7 @@ export class CopilotRuntime extends Runtime {
         if (!this.client) this.client = await this.clientFactory(this.clientOptions);
         await this.client.start();
         this.ready = true;
-        this.info = { backend: 'copilot-sdk', sdkVersion: '1.0.13' };
+        this.info = { backend: 'copilot-sdk', sdkVersion: '1.0.19' };
         this.emit('ready', this.info);
         return this.info;
       } catch (error) {

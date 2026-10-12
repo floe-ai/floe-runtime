@@ -147,7 +147,7 @@ if that optional API is unavailable.
 
 ### CopilotRuntime (`src/adapters/copilot.mjs`)
 
-Copilot uses the official `@github/copilot-sdk@1.0.13` and its bundled runtime.
+Copilot uses the official `@github/copilot-sdk@1.0.19` and its bundled runtime.
 The adapter subscribes before sending a prompt. A turn completes at
 `session.idle`; `assistant.turn_end` is a model-call boundary within the agent
 loop. Cancellation waits for abort acknowledgement followed by `session.idle`;

@@ -89,8 +89,19 @@ export type PromptBlock =
   | { type: 'file' | 'directory'; path: string; displayName?: string }
   | { type: 'selection'; filePath: string; displayName: string; selection?: { start: { line: number; character: number }; end: { line: number; character: number } }; text?: string }
   | { type: 'blob' | 'image'; data: string; mimeType: string; displayName?: string };
+/**
+ * Copilot reasoning effort level. Each model supports its own subset (see `models()` →
+ * `supportedReasoningEfforts`); `none` is offered by some GPT models.
+ */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface RunSettings {
   model?: string;
+  /**
+   * Reasoning effort for this run. Omit for the model's default (or, on a continued session, the
+   * session's current effort). A level the model does not support is refused with `copilot_effort_unavailable`.
+   */
+  effort?: ReasoningEffort;
   timeoutMs?: number;
   progressTimeoutMs?: number;
   systemMessage?: SystemMessageConfig | string;
@@ -138,6 +149,8 @@ export interface RunContinuation {
 
 export interface RunStartMeta {
   model: string | null;
+  /** The effort the session is set to, or null when Copilot's model default applies. */
+  effort: string | null;
   runtimeInstance: unknown;
   session: { action: 'fresh' | 'reused' | 'refreshed'; reason: string };
 }
@@ -151,6 +164,8 @@ export interface RunResult {
   sessionId: string;
   turnId: string;
   stopReason: string;
+  /** The effort Copilot reported using, else the effort the session was set to, else null. */
+  effort: string | null;
   items: unknown[];
   usage: unknown;
   elapsedMs: number;
@@ -394,7 +409,12 @@ export class CopilotRuntime extends EventEmitter {
     settings?: RunSettings,
     continuation?: RunContinuation,
   ): Promise<RunResult>;
-  setModel(sessionId: string, modelId: string): Promise<unknown>;
+  /**
+   * Switches a live session's model and optionally its effort. Without `options.effort` the current
+   * effort is kept; a model that cannot use it is refused (`copilot_effort_unavailable`). A switch
+   * Copilot rejects (`copilot_model_switch_rejected`) leaves the session unchanged.
+   */
+  setModel(sessionId: string, modelId: string, options?: { effort?: ReasoningEffort }): Promise<unknown>;
   interrupt(sessionId: string): Promise<void>;
   quiesce(sessionId: string): Promise<void>;
   retire(sessionId: string): Promise<{ status: string; reason?: string }>;

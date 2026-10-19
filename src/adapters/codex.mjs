@@ -70,6 +70,7 @@ export class CodexRuntime extends Runtime {
     // setModel()/setPermissions() - Codex has no confirmed live mid-thread RPC
     // for either, so both are modelled as overrides consumed by run()).
     this.modelOverrides = new Map();
+    this.effortOverrides = new Map();
     this.permissionOverrides = new Map();
     // F11: last-known objective per threadId, set by setGoal()/cleared alongside it - this runtime
     // instance's own memory of what it last asked for, used to re-apply a goal after resume() silently
@@ -368,9 +369,10 @@ export class CodexRuntime extends Runtime {
     return data;
   }
 
-  /** P1: applies a model override for this thread's NEXT turn/start call (Codex has no live mid-thread model RPC). */
-  setModel(threadId, modelId) {
+  /** P1: applies a model (and optional reasoning effort) override for this thread's NEXT turn/start call (Codex has no live mid-thread model RPC). */
+  setModel(threadId, modelId, options = {}) {
     this.modelOverrides.set(threadId, modelId);
+    if (options.effort) this.effortOverrides.set(threadId, options.effort);
   }
 
   /** P3: Codex has no session-mode concept (interactive/plan/autopilot) - declare unsupported rather than faking it. */
@@ -537,6 +539,7 @@ export class CodexRuntime extends Runtime {
     // per-call settings for the NEXT turn/start - see setModel()/setPermissions() above.
     const modelOverride = continuation.threadId && this.modelOverrides.get(continuation.threadId);
     const model = modelOverride || (Object.hasOwn(settings, 'model') ? settings.model : this.model);
+    const effort = (continuation.threadId && this.effortOverrides.get(continuation.threadId)) || settings.effort;
     const permissionOverride = continuation.threadId && this.permissionOverrides.get(continuation.threadId);
     const permissions = permissionOverride || settings.permissions || DEFAULT_PERMISSIONS;
     const timeoutMs = settings.timeoutMs || this.timeoutMs;
@@ -604,7 +607,7 @@ export class CodexRuntime extends Runtime {
     completion.catch(() => {});
     try {
       await onStart(threadId, {
-        model: result.model || model || null, effort: settings.effort || result.reasoningEffort || null, ephemeral,
+        model: result.model || model || null, effort: effort || result.reasoningEffort || null, ephemeral,
         runtimeInstance: this.instanceId,
         session: { action: reused ? 'reused' : continuation.threadId || continuation.refreshed ? 'refreshed' : 'fresh', reason: reused ? 'Continuing the same session.' : reason },
         ...permissions,
@@ -612,7 +615,7 @@ export class CodexRuntime extends Runtime {
       const started = await this.request('turn/start', {
         threadId, cwd, input: input.blocks || [{ type: 'text', text: input.prompt }], approvalPolicy: permissions.approvalPolicy, approvalsReviewer: 'user',
         sandboxPolicy: permissions.sandboxPolicy,
-        ...(input.schema ? { outputSchema: input.schema } : {}), ...(model ? { model } : {}), ...(settings.effort ? { effort: settings.effort } : {}),
+        ...(input.schema ? { outputSchema: input.schema } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}),
       });
       const task = this.turns.get(threadId);
       if (task) {

@@ -178,7 +178,7 @@ export class Fleet extends EventEmitter {
     return result;
   }
 
-  setModel(agentId, modelId) { return this.#delegate(agentId, 'setModel', modelId); }
+  setModel(agentId, modelId, options) { return this.#delegate(agentId, 'setModel', modelId, options); }
 
   setPermissions(agentId, level) { return this.#delegate(agentId, 'setPermissions', level); }
 

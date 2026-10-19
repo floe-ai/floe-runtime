@@ -1,6 +1,6 @@
 {
   "name": "floe-runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared subprocess/JSON-RPC runtime for driving AI coding-agent CLIs (Codex, Copilot) with a common start/run/interrupt/quiesce/retire lifecycle.",
   "type": "module",
   "license": "UNLICENSED",
@@ -19,7 +19,8 @@
   },
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test": "node --test --test-concurrency=1 test/*.test.mjs",

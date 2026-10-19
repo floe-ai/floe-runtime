@@ -32,3 +32,25 @@ test('Copilot SDK smoke: starts the bundled runtime and lists available models',
     await runtime.close();
   }
 });
+
+// gpt-5-mini, not CHEAP_COPILOT_MODEL: Claude Haiku 4.5 does not support reasoning effort.
+const EFFORT_MODEL = 'gpt-5-mini';
+const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+
+test('Copilot SDK smoke: reasoning effort reaches Copilot on create and on a live switch', { skip }, async () => {
+  const runtime = makeRuntime();
+  try {
+    const input = { prompt: 'Reply with {"ok":true} only.', schema: SCHEMA };
+    const first = await runtime.run('worker', input, tmpdir(), () => {}, { model: EFFORT_MODEL, effort: 'low' });
+    assert.equal(first.effort, 'low', 'Copilot must report the effort it used for the turn');
+    await runtime.setModel(first.sessionId, EFFORT_MODEL, { effort: 'high' });
+    const second = await runtime.run('worker', input, tmpdir(), () => {}, {}, { sessionId: first.sessionId });
+    assert.equal(second.effort, 'high');
+    await assert.rejects(
+      runtime.setModel(first.sessionId, EFFORT_MODEL, { effort: 'max' }),
+      error => error.code === 'copilot_effort_unavailable',
+    );
+  } finally {
+    await runtime.close();
+  }
+});

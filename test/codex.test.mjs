@@ -251,6 +251,21 @@ test('setModel() overrides the model on this thread\'s next turn/start call', as
   }
 });
 
+test('setModel() with an effort overrides the reasoning effort on this thread\'s next turn', async () => {
+  const runtime = makeRuntime();
+  try {
+    const first = await runtime.run('worker', { prompt: 'do something', schema: SCHEMA }, '/tmp/work', () => {}, { effort: 'low' });
+    await runtime.quiesce(first.threadId);
+    runtime.setModel(first.threadId, 'better-model', { effort: 'high' });
+    const metas = [];
+    await runtime.run('worker', { prompt: 'do something else', schema: SCHEMA }, '/tmp/work', (threadId, meta) => metas.push(meta), { effort: 'low' }, { threadId: first.threadId, scope: 'issue-1' });
+    assert.equal(metas[0].model, 'better-model');
+    assert.equal(metas[0].effort, 'high');
+  } finally {
+    await runtime.close();
+  }
+});
+
 test('setPermissions() overrides the permission level applied on this thread\'s next turn/start call', async () => {
   const runtime = makeRuntime();
   try {

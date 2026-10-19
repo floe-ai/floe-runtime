@@ -222,6 +222,26 @@ sessions are refused without fallback.
 Model listing and selection use SDK APIs; authentication is owned by the SDK
 runtime.
 
+#### Reasoning effort
+
+`settings.effort` sets the reasoning effort (`none`, `low`, `medium`, `high`,
+`xhigh`, `max`), the same setting name as the Codex adapter. Each model
+supports its own levels, listed by `models()` as `supportedReasoningEfforts`.
+- **Omitted:** nothing is sent and Copilot uses the model's default.
+- **Unsupported level:** refused before any session is touched with
+  `copilot_effort_unavailable`, naming the levels the model supports. Models
+  whose catalogue entry says nothing about effort (for example `auto`) are left
+  to Copilot.
+- **Reported:** `result.effort` is the effort Copilot reported using (from its
+  usage events), else the effort the session was set to, else `null`.
+  `onStart` meta carries the effort the session is set to.
+- **Mid-session:** `setModel(id, modelId, { effort })` changes model and effort
+  together. A continued `run()` with a different `settings.model` or
+  `settings.effort` switches the live session the same way; with no effort it
+  keeps the current one. A new model that cannot use the current effort is
+  refused rather than silently reset. A switch Copilot rejects raises
+  `copilot_model_switch_rejected` and leaves the session as it was.
+
 The pinned Windows runtime exposes only work tools, in one of two catalogs.
 The default catalog has PowerShell and its read/stop/list companions, `view`,
 `grep`, `glob`, `create`, `edit`, and `web_fetch`. The codex catalog has the
@@ -308,7 +328,7 @@ equivalent capability, the method throws a `RuntimeFault` with code
 
 | Method | Codex | Copilot | Notes |
 | --- | --- | --- | --- |
-| `setModel(id, modelId)` | ✅ applied on the next `turn/start` | ✅ SDK session model selection | Copilot rejects model IDs absent from the SDK's advertised catalogue; it never silently falls back to the default. |
+| `setModel(id, modelId, { effort }?)` | ✅ model and effort applied on the next `turn/start` | ✅ SDK session model and effort switch | Copilot rejects model IDs absent from the SDK's advertised catalogue and efforts the model does not support; it never silently falls back to the default. |
 | `releaseSession(id)` / `retire(id)` | ✅ `thread/unsubscribe` | ✅ SDK session disconnect | |
 | `setMode(id, mode)` | ❌ unsupported | ❌ unsupported | Codex has no session-mode concept |
 | `setPermissions(id, level)` | ✅ `approvalPolicy`/`sandbox`/`sandboxPolicy` override, applied next `turn/start` | ❌ unsupported; configure `permissionPolicy` at construction | |

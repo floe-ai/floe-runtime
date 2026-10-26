@@ -14,6 +14,7 @@ import { SessionRegistry, sessionKey } from '../session-reuse.mjs';
 import { extractStructuredOutput } from '../schema.mjs';
 import { codexActivityKind, codexActivityTitle } from '../activity.mjs';
 import { unsupported } from '../capabilities.mjs';
+import { compactResult, compactionEvent } from '../compaction.mjs';
 import { appendedSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 
 // F9: `turn.error.codexErrorInfo` values confirmed (or reasonably expected as siblings) to mean "this
@@ -118,6 +119,12 @@ export class CodexRuntime extends Runtime {
     const params = message.params || {};
     const threadId = params.threadId || params.thread?.id;
     const task = threadId && this.turns.get(threadId);
+    // Codex reports compaction (manual or automatic) only as a contextCompaction item, with no figures.
+    if (threadId && params.item?.type === 'contextCompaction' && (message.method === 'item/started' || message.method === 'item/completed')) {
+      this.publish(threadId, 'compaction', compactionEvent('codex', threadId, {
+        phase: message.method === 'item/started' ? 'started' : 'completed', raw: params,
+      }));
+    }
     if (task) {
       task.lastActivity = Date.now();
       if (message.method === 'turn/started' && !task.turnId) task.turnId = params.turn?.id;
@@ -399,10 +406,15 @@ export class CodexRuntime extends Runtime {
     return result;
   }
 
-  /** P6: summarizes/compacts the thread's conversation history. */
+  /**
+   * P6: starts compacting the thread's history. Codex's `thread/compact/start` takes no focus text and
+   * answers before compaction finishes, so `success` is null; watch the `compaction` event for the end.
+   */
   async compact(threadId, focus) {
+    check(!focus, 'compact_focus_unsupported', 'Codex compaction does not accept focus text.', 400);
     await this.start();
-    return this.request('thread/compact/start', { threadId, ...(focus ? { focus } : {}) });
+    await this.request('thread/compact/start', { threadId });
+    return compactResult('codex', threadId, {});
   }
 
   /** P7: reports account-level usage/rate-limit info. Codex has no per-thread usage read; sessionId is accepted for interface parity but ignored. */

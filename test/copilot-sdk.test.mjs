@@ -378,7 +378,7 @@ test('SDK runtime capabilities do not advertise unsupported control methods', ()
   assert.equal(capabilities.setMode, false);
   assert.equal(capabilities.setPermissions, false);
   assert.equal(capabilities.setGoal, false);
-  assert.equal(capabilities.compact, false);
+  assert.equal(capabilities.compact, true);
   assert.equal(capabilities.usage, false);
   assert.equal(capabilities.availableCommands, false);
   assert.equal(capabilities.fleetMode, false);

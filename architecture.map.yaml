@@ -14,6 +14,7 @@ system:
           paths:
             - src/activity.mjs
             - src/capabilities.mjs
+            - src/compaction.mjs
             - src/errors.mjs
             - src/events.mjs
             - src/fleet.mjs
@@ -56,6 +57,7 @@ system:
               paths:
                 - src/activity.mjs
                 - src/capabilities.mjs
+                - src/compaction.mjs
                 - src/errors.mjs
                 - src/events.mjs
                 - src/fleet.mjs
@@ -118,8 +120,10 @@ system:
             - src/adapters/copilot-tools.mjs
             - test/copilot-account.test.mjs
             - test/copilot-before-tool-use.test.mjs
+            - test/copilot-compaction.test.mjs
             - test/copilot-sdk.test.mjs
             - test/fake-copilot-sdk.mjs
+            - test-smoke/copilot-compaction.smoke.test.mjs
             - test-smoke/copilot-sdk.smoke.test.mjs
             - test-smoke/copilot-tool-gate.smoke.test.mjs
           writeAuthority:
@@ -135,7 +139,9 @@ system:
                 - src/adapters/copilot-tools.mjs
                 - test/copilot-account.test.mjs
                 - test/copilot-before-tool-use.test.mjs
+                - test/copilot-compaction.test.mjs
                 - test/copilot-sdk.test.mjs
                 - test/fake-copilot-sdk.mjs
+                - test-smoke/copilot-compaction.smoke.test.mjs
                 - test-smoke/copilot-sdk.smoke.test.mjs
                 - test-smoke/copilot-tool-gate.smoke.test.mjs

@@ -312,12 +312,41 @@ test('setGoal() sets and clears a thread goal, and rejects an unsupported maxCre
   }
 });
 
-test('compact() requests thread/compact/start', async () => {
+test('compact() starts thread/compact/start and reports a normalized result', async () => {
   const runtime = makeRuntime();
   try {
     const first = await runtime.run('worker', { prompt: 'do something', schema: SCHEMA }, '/tmp/work');
-    const result = await runtime.compact(first.threadId, 'focus on tests');
-    assert.equal(result.started, true);
+    const result = await runtime.compact(first.threadId);
+    assert.deepEqual(result, {
+      runtime: 'codex', sessionId: first.threadId, success: null,
+      tokensRemoved: null, messagesRemoved: null, summary: null, error: null,
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('compact() refuses focus text, which Codex cannot take', async () => {
+  const runtime = makeRuntime();
+  try {
+    await assert.rejects(() => runtime.compact('thread_x', 'focus on tests'), { code: 'compact_focus_unsupported' });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('a contextCompaction item publishes started and completed compaction events', async () => {
+  const runtime = makeRuntime();
+  const events = [];
+  runtime.on('compaction', event => events.push(event));
+  try {
+    for (const method of ['item/started', 'item/completed']) {
+      runtime.onNotification({ method, params: { threadId: 'thread_c', turnId: 't1', item: { type: 'contextCompaction', id: 'c1' } } });
+    }
+    assert.deepEqual(events.map(event => [event.runtime, event.sessionId, event.phase, event.trigger, event.summary]), [
+      ['codex', 'thread_c', 'started', null, null],
+      ['codex', 'thread_c', 'completed', null, null],
+    ]);
   } finally {
     await runtime.close();
   }

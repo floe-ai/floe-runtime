@@ -52,7 +52,35 @@ export class FakeCopilotSession {
       model: {
         getCurrent: async () => ({ modelId: this.config.model || 'gpt-5-mini' }),
       },
+      // Mirrors live CLI 1.0.95: events carry the request's trigger, and a failed compaction is
+      // reported as a failed compaction_complete event before the call rejects.
+      history: {
+        compact: async (input = {}) => {
+          this.client.compactCalls.push(input);
+          const trigger = input.trigger;
+          this.emit('session.compaction_start', { trigger, currentTokens: 5000, tokenLimit: 272000 });
+          if (this.client.compactFailure) {
+            this.emit('session.compaction_complete', { success: false, error: this.client.compactFailure, trigger, customInstructions: input.customInstructions });
+            throw new Error(`Request session.history.compact failed with message: ${this.client.compactFailure}`);
+          }
+          const outcome = { tokensRemoved: 4000, messagesRemoved: 3, summaryContent: '<overview>Kept the decisions.</overview>' };
+          this.emit('session.compaction_complete', {
+            success: true, trigger, customInstructions: input.customInstructions,
+            preCompactionTokens: 5000, postCompactionTokens: 1000, ...outcome,
+          });
+          return { success: true, ...outcome, contextWindow: { tokenLimit: 272000, currentTokens: 1000, messagesLength: 1 } };
+        },
+      },
     };
+  }
+
+  /** An automatic compaction, as the SDK runs it in the background. */
+  backgroundCompaction() {
+    this.emit('session.compaction_start', { trigger: 'threshold', currentTokens: 70000, tokenLimit: 272000 });
+    this.emit('session.compaction_complete', {
+      success: true, trigger: 'threshold', preCompactionTokens: 70000, postCompactionTokens: 12000,
+      tokensRemoved: 58000, messagesRemoved: 1, summaryContent: '<overview>Background summary.</overview>',
+    });
   }
 
   on(handler) {
@@ -205,6 +233,8 @@ export class FakeCopilotSession {
 
   async disconnect() {
     this.client.sendOrder.push('disconnect');
+    // The real SDK clears every handler on disconnect.
+    this.handlers.clear();
   }
 }
 
@@ -224,6 +254,8 @@ export class FakeCopilotClient {
     this.pending = null;
     this.listModelsCalls = 0;
     this.setModelCalls = [];
+    this.compactCalls = [];
+    this.compactFailure = null;
   }
 
   async start() {}
@@ -262,6 +294,9 @@ export class FakeCopilotClient {
   }
 
   async listSessions() {
-    return [...this.sessions.keys()].map(sessionId => ({ sessionId }));
+    return [...this.sessions.values()].map(session => ({
+      sessionId: session.sessionId,
+      context: { workingDirectory: session.config.workingDirectory },
+    }));
   }
 }

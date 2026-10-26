@@ -333,7 +333,7 @@ equivalent capability, the method throws a `RuntimeFault` with code
 | `setMode(id, mode)` | ❌ unsupported | ❌ unsupported | Codex has no session-mode concept |
 | `setPermissions(id, level)` | ✅ `approvalPolicy`/`sandbox`/`sandboxPolicy` override, applied next `turn/start` | ❌ unsupported; configure `permissionPolicy` at construction | |
 | `setGoal(id, objective, opts)` | ✅ `thread/goal/set`\|`get`\|`clear` (`opts.maxCredits` unsupported) | ❌ unsupported | |
-| `compact(id, focus)` | ✅ `thread/compact/start` | ❌ unsupported | |
+| `compact(id, focus)` | ✅ `thread/compact/start`; no focus text, returns before compaction ends | ✅ SDK `history.compact` (experimental) | See "Compaction". |
 | `usage(id)` | ✅ `account/usage/read` + `account/rateLimits/read` | ❌ unsupported | |
 | `steer(id, text)` | ✅ `turn/steer` (requires an active turn) | ❌ unsupported | |
 | `fork(id)` | ✅ `thread/fork` | ❌ unsupported | |
@@ -364,6 +364,72 @@ runtime.on('stream', event => { /* ... */ });
 
 Fires live incremental text/reasoning/command-output as the agent produces
 it, in addition to the final result `run()` resolves with.
+
+## Compaction
+
+Compaction summarizes a conversation's history to free context window.
+
+**Manual: `compact(sessionId, focus?, options?)`**
+- `focus` steers what the summary keeps, for example
+  `'keep design decisions and rejected options'`.
+- Resolves with:
+  `{ runtime, sessionId, success, tokensRemoved, messagesRemoved, summary, error }`.
+  Fields the backend does not report are `null`.
+- Refused with `turn_busy` while the session has an active turn, and with
+  `compaction_busy` while it is already compacting. `run()` on a compacting
+  session is refused with `compaction_busy`.
+
+**Copilot**
+- Uses the SDK's `session.rpc.history.compact`, which the SDK marks
+  experimental.
+- A session that is not live in this process (for example after a restart)
+  is resumed first, in `options.cwd` or else the working directory Copilot
+  recorded for it. `options.settings` are the resume settings.
+- A failed compaction (for example `Nothing to compact.`) resolves with
+  `success: false` and the SDK's `error`. Other SDK failures reject with
+  `copilot_compaction_failed`.
+- `tokensRemoved` can be negative: on a short history the summary can be
+  longer than what it replaced.
+- Compaction is its own model call. Its cost is in the event's `raw` data
+  (`compactionTokensUsed`), not in the turn's usage.
+
+**Copilot automatic compaction: `infiniteSessions`**
+- Set it as a runtime option or per run in `settings.infiniteSessions`; the
+  run setting wins. Omitted, the SDK default applies (on, starting at 80% of
+  the context window and blocking at 95%).
+- Fields: `enabled` (`false` turns automatic compaction off),
+  `backgroundCompactionThreshold`, `bufferExhaustionThreshold` (each above 0,
+  at most 1).
+- Copilot fixes it when a session is created or resumed. A continued `run()`
+  with a different value is refused with `copilot_compaction_settings_locked`;
+  retire the session and resume it with the new setting.
+- Confirmed live: with `enabled: false` no compaction runs as the context fills,
+  and the session still resumes after a restart.
+
+**Codex**
+- `thread/compact/start` takes no focus text, so a `focus` is refused with
+  `compact_focus_unsupported`.
+- It answers before compaction finishes, so `success` is `null`. Watch the
+  `compaction` event for the end.
+- Automatic compaction is Codex's own; this runtime has no setting for it.
+
+**The `compaction` event**
+
+```js
+runtime.on('compaction', event => { /* ... */ });
+// { runtime, sessionId, phase: 'started'|'completed'|'failed', trigger,
+//   tokensBefore, tokensAfter, tokensRemoved, messagesRemoved, focus,
+//   summary, error, raw }
+```
+
+- Fires for manual and automatic compactions, including ones between runs,
+  while the session is live in this process.
+- Copilot `trigger` values are the SDK's: `manual`, `threshold` (automatic,
+  in the background), `context_limit_retry`, `memory_pressure`,
+  `model_switch`.
+- Codex reports only that a compaction started and completed (a
+  `contextCompaction` item), so `trigger`, token counts, `focus` and `summary`
+  are `null`, and it never reports `failed`.
 
 ## No polling, anywhere
 
@@ -424,9 +490,8 @@ conversation by itself.**
   session ids, or against `listSessions()`'s full backend list.
 - **Context window growth**: conversations cannot grow forever. The answer is
   `compact(sessionId, focus)` (P6) - it summarizes history to reclaim context
-  budget - not dropping the conversation. Call it proactively (e.g. from a
-  `usage()`/`thread/tokenUsage/updated`-driven heuristic) before a
-  conversation's context window is actually exhausted.
+  budget - not dropping the conversation. Copilot also compacts automatically
+  unless `infiniteSessions.enabled` is `false`. See "Compaction".
 - **Resuming a Codex thread clears its goal server-side.** Confirmed live:
   `thread/resume` is immediately followed by a `thread/goal/cleared`
   notification. `resume(threadId, { goal })` re-applies the last known
@@ -489,8 +554,8 @@ references - safe to `JSON.stringify`, log, or store):
 ```
 
 - `seq` - a monotonic integer, per `conversationId` (a threadId/sessionId).
-- `type` - `'activity'`, `'stream'`, `'turn'`, `'replay'`, `'replayComplete'`,
-  or `'gap'`.
+- `type` - `'activity'`, `'stream'`, `'turn'`, `'compaction'`, `'replay'`,
+  `'replayComplete'`, or `'gap'`.
 - `replay` - `true` while the event is part of replayed history, `false` once
   activity is live. A `'replayComplete'` event marks the transition.
 - `data` - the same shape the matching named event (`'activity'`, `'stream'`,
@@ -674,6 +739,8 @@ retirement events - never a timer (see "No polling, anywhere").
   `extractStructuredOutput()`, `promptInstructionFor()`.
 - `src/activity.mjs` - the normalized activity event shape and Codex
   `kind` mapping (`codexActivityKind()`).
+- `src/compaction.mjs` - the normalized `compaction` event and `compact()`
+  result shapes, and `infiniteSessions` validation.
 - `src/events.mjs` - `EventLog` (the bounded, sequenced, per-conversation
   replay buffer) and `watchEvents()` (the async-iterable live feed backing
   `Runtime#events()`).

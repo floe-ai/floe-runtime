@@ -105,9 +105,49 @@ export interface RunSettings {
   timeoutMs?: number;
   progressTimeoutMs?: number;
   systemMessage?: SystemMessageConfig | string;
+  /** Automatic compaction for a new or resumed session; overrides the runtime option. See README "Compaction". */
+  infiniteSessions?: InfiniteSessionsSettings;
   tools?: HostTool[];
   availableTools?: string[];
   excludedTools?: string[];
+}
+
+/** Copilot SDK automatic-compaction settings. Omitted fields use the SDK defaults. */
+export interface InfiniteSessionsSettings {
+  /** `false` turns automatic compaction off. SDK default: true. */
+  enabled?: boolean;
+  /** Context use (above 0, at most 1) at which background compaction starts. SDK default: 0.80. */
+  backgroundCompactionThreshold?: number;
+  /** Context use (above 0, at most 1) at which the session waits for compaction. SDK default: 0.95. */
+  bufferExhaustionThreshold?: number;
+}
+
+/** What `compact()` resolves with. Fields the backend does not report are null. */
+export interface CompactResult {
+  runtime: 'copilot' | 'codex';
+  sessionId: string;
+  success: boolean | null;
+  tokensRemoved: number | null;
+  messagesRemoved: number | null;
+  summary: string | null;
+  error: string | null;
+}
+
+/** Backend-neutral compaction event (README: "Compaction"). */
+export interface CompactionEvent {
+  runtime: 'copilot' | 'codex';
+  sessionId: string;
+  phase: 'started' | 'completed' | 'failed';
+  /** Copilot SDK trigger: manual, threshold, context_limit_retry, memory_pressure or model_switch. */
+  trigger: string | null;
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+  tokensRemoved: number | null;
+  messagesRemoved: number | null;
+  focus: string | null;
+  summary: string | null;
+  error: string | null;
+  raw: unknown;
 }
 
 export interface HostTool {
@@ -334,6 +374,7 @@ export type CopilotRuntimeOptions = {
   tools?: HostTool[];
   availableTools?: string[];
   excludedTools?: string[];
+  infiniteSessions?: InfiniteSessionsSettings;
   permissionPolicy?: (request: CopilotPermissionRequest) => PermissionPolicyDecision | Promise<PermissionPolicyDecision>;
   beforeToolUse?: CopilotBeforeToolUse;
   defaultPermissionDecision?: 'allow_once';
@@ -347,7 +388,7 @@ export interface CopilotCapabilities extends Record<string, boolean> {
   setMode: false;
   setPermissions: false;
   setGoal: false;
-  compact: false;
+  compact: true;
   usage: false;
   steer: false;
   fork: false;
@@ -418,13 +459,19 @@ export class CopilotRuntime extends EventEmitter {
   interrupt(sessionId: string): Promise<void>;
   quiesce(sessionId: string): Promise<void>;
   retire(sessionId: string): Promise<{ status: string; reason?: string }>;
-  resume(sessionId: string, cwd: string): Promise<string>;
+  resume(sessionId: string, cwd: string, settings?: RunSettings): Promise<string>;
+  /**
+   * Compacts the session's history now. A session not live in this process is resumed first, in
+   * `options.cwd` or the working directory Copilot recorded. Refused with `turn_busy` during a turn.
+   */
+  compact(sessionId: string, focus?: string, options?: { cwd?: string; settings?: RunSettings }): Promise<CompactResult>;
   availableCommands(sessionId: string): never;
   close(): Promise<void>;
 
   on(event: 'activity', listener: (event: ActivityEvent) => void): this;
   on(event: 'turn', listener: (event: TurnEvent) => void): this;
   on(event: 'usage', listener: (event: UsageEvent) => void): this;
+  on(event: 'compaction', listener: (event: CompactionEvent) => void): this;
   on(event: 'diagnostic', listener: (text: string) => void): this;
   on(event: 'stream' | 'request' | 'ready' | 'lost' | 'notification', listener: (...args: unknown[]) => void): this;
   on(event: string | symbol, listener: (...args: any[]) => void): this;

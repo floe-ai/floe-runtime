@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Copilot account sign-in.** The account adapter can start the SDK login flow
+  without a packaged CLI, publish progress events, accept app-provided answers,
+  cancel flows, and optionally open the provider URL. The CLI device-code path
+  remains available as a compatibility mode and uses the configured Copilot
+  home.
+- **Account sign-in contract.** Added engine-neutral state/progress/action and
+  answer types. The Copilot login RPC is experimental in SDK 1.0.19; plaintext
+  consent is surfaced but cannot be answered until the SDK documents its wire
+  format.
+
 ## 0.2.0
 
 ### Added

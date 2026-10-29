@@ -66,7 +66,11 @@ test('SDK runtime requires the account confirmed by readiness', () => {
 test('public runtime construction with baseDirectory completes a fake SDK turn', async () => {
   let client;
   const runtime = new PublicCopilotRuntime({
-    clientOptions: { baseDirectory: 'C:\\floe-owned\\copilot-session' },
+    clientOptions: {
+      baseDirectory: 'C:\\floe-owned\\copilot-session',
+      env: { COPILOT_HOME: 'C:\\different-home' },
+      connection: { env: { COPILOT_HOME: 'C:\\different-connection-home' } },
+    },
     expectedAccount: { label: 'octocat', host: 'https://github.com/' },
     clientFactory: options => {
       client = new FakeCopilotClient(options);
@@ -79,6 +83,8 @@ test('public runtime construction with baseDirectory completes a fake SDK turn',
     const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
     assert.deepEqual(result.report, { ok: true, summary: 'done' });
     assert.equal(client.options.baseDirectory, 'C:\\floe-owned\\copilot-session');
+    assert.equal(client.options.env.COPILOT_HOME, 'C:\\floe-owned\\copilot-session');
+    assert.equal(client.options.connection.env.COPILOT_HOME, 'C:\\floe-owned\\copilot-session');
     assert.equal(client.options.mode, 'copilot-cli');
     assert.equal(client.options.useLoggedInUser, true);
   } finally {

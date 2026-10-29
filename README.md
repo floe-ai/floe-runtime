@@ -306,17 +306,54 @@ embedded context, fail with `unsupported_prompt_block` before sending.
 
 `CopilotEngineAccountAdapter` performs a pre-turn account check through a
 short-lived SDK client and publishes normalized `state` events for
-reachability, authentication, and entitlement. Its `signIn()` and
-`cancelSignIn()` methods drive an explicitly supplied, packaged official
-Copilot CLI through `copilot login`; OAuth credentials remain in GitHub's
-credential store. SDK and login children never receive
+reachability, authentication, and entitlement. Configure the same
+`clientOptions.baseDirectory` on this adapter and `CopilotRuntime`; account
+checks, sign-in, and conversation sessions then use the same Floe-owned
+Copilot home.
+
+The default `signIn()` path uses the SDK's session-scoped login RPC and does not
+require `cliPath`. It emits `sign_in` progress events rather than requiring
+apps to poll. An app can open the returned URL itself and continue the flow,
+or disable Floe's default browser opening with `openBrowser: false`:
+
+```js
+import { CopilotEngineAccountAdapter } from 'floe-runtime/adapters/copilot';
+
+const accounts = new CopilotEngineAccountAdapter({
+  clientOptions: { baseDirectory: copilotHome },
+});
+accounts.on('state', state => updateAccountState(state));
+accounts.on('sign_in', progress => updateSignIn(progress));
+
+const { id } = await accounts.signIn({ provider: 'github' });
+// When progress.action asks for input or account selection:
+await accounts.continueSignIn(id, { kind: 'input', value: userInput });
+// Or: { kind: 'select_account', selectionId }
+// For open_url, needs_interaction, and awaiting actions: { kind: 'continue' }
+await accounts.cancelSignIn(id); // or await accounts.close()
+```
+
+The app-facing provider names are `github`, `github-enterprise-cloud`, and
+`microsoft-entra`; provider-specific SDK names stay inside the adapter. The
+adapter explicitly reports input prompts, account selection, plaintext
+consent, and provider-driven interaction as progress actions. The SDK
+currently exposes plaintext-consent state without documenting an answer
+format, so attempting to answer it fails with
+`copilot_login_action_unsupported`; apps should explain the limitation and
+allow cancellation rather than guessing a consent value.
+
+**SDK risk:** the login RPC is experimental and undocumented in Copilot SDK
+1.0.19. Provider mappings follow its generated type enums, but GitHub
+Enterprise Cloud, Entra, and headless provider flows have not been tested
+end-to-end. SDK sign-in has no device-code step.
+
+For compatibility, `signIn({ mode: 'device' })` retains the existing
+official-CLI device-code path and requires an explicitly supplied `cliPath`.
+It sets the CLI's `COPILOT_HOME` to `clientOptions.baseDirectory`, so its
+account storage matches SDK checks and sessions. This local CLI compatibility
+path is not a remote device-code API. SDK and CLI children never receive
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or
 `COPILOT_DISABLE_KEYTAR` from the parent process.
-On Windows the login child is hidden instead of opening a second console.
-Its output remains inherited for terminal users, but Floe does not parse that
-vendor-owned text as a protocol. The pushed waiting state explains that a
-browser should open and directs the person to the official CLI in a terminal
-if it does not.
 
 ## Parity surface
 

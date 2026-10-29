@@ -72,6 +72,24 @@ export function copilotConnectionForHome(connection, baseDirectory) {
   };
 }
 
+/**
+ * SDK client options isolated to Floe's Copilot home. The SDK rejects env on both the client and a
+ * stdio/tcp connection, so a connection that carries its own env gets the only (filtered) env.
+ */
+export function copilotSdkClientOptions(clientOptions, environment = process.env) {
+  const { gitHubToken: _ignoredToken, connection, env: optionEnvironment, ...options } = clientOptions;
+  const { baseDirectory } = clientOptions;
+  const isolated = { ...options, mode: 'copilot-cli', useLoggedInUser: true };
+  if (connection?.env) {
+    return { ...isolated, connection: copilotConnectionForHome(connection, baseDirectory) };
+  }
+  return {
+    ...isolated,
+    ...(connection ? { connection } : {}),
+    env: copilotEnvironmentForHome({ ...environment, ...optionEnvironment }, baseDirectory),
+  };
+}
+
 function errorCode(error) {
   return typeof error?.code === 'string' ? error.code.toLowerCase() : '';
 }
@@ -571,18 +589,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
   }
 
   #sdkOptions() {
-    const { gitHubToken: _ignoredToken, connection, env: optionEnvironment, ...options } = this.clientOptions;
-    const environment = copilotEnvironmentForHome(
-      { ...this.environment, ...optionEnvironment },
-      this.clientOptions.baseDirectory,
-    );
-    return {
-      ...options,
-      ...(connection ? { connection: copilotConnectionForHome(connection, this.clientOptions.baseDirectory) } : {}),
-      mode: 'copilot-cli',
-      env: environment,
-      useLoggedInUser: true,
-    };
+    return copilotSdkClientOptions(this.clientOptions, this.environment);
   }
 
   async #stopClient(client) {

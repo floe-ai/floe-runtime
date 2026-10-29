@@ -21,7 +21,7 @@ import {
   prepareCopilotToolSession,
   resolveCopilotToolSelection,
 } from './copilot-tools.mjs';
-import { copilotConnectionForHome, copilotEnvironmentForHome } from './copilot-account.mjs';
+import { copilotSdkClientOptions } from './copilot-account.mjs';
 import { copilotSystemMessage, floeBaseSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
@@ -73,17 +73,6 @@ function normalizedHost(host) {
 /** The model and reasoning effort a session was opened or last switched with (null = Copilot default). */
 function modelState(model, settings = {}) {
   return { currentModelId: model || null, currentEffort: settings.effort || null };
-}
-
-function isolatedClientOptions(clientOptions) {
-  const { gitHubToken: _ignoredToken, connection, env: optionEnvironment, ...options } = clientOptions;
-  return {
-    ...options,
-    ...(connection ? { connection: copilotConnectionForHome(connection, clientOptions.baseDirectory) } : {}),
-    mode: 'copilot-cli',
-    useLoggedInUser: true,
-    env: copilotEnvironmentForHome({ ...process.env, ...optionEnvironment }, clientOptions.baseDirectory),
-  };
 }
 
 function layeredSystemMessage(applicationLayer, actorLayer) {
@@ -178,7 +167,7 @@ export class CopilotRuntime extends Runtime {
     this.progressTimeoutMs = progressTimeoutMs;
     this.client = client;
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
-    this.clientOptions = isolatedClientOptions(clientOptions);
+    this.clientOptions = copilotSdkClientOptions(clientOptions);
     this.systemMessage = systemMessage;
     layeredSystemMessage(systemMessage); // rejects a malformed application layer at construction
     this.tools = tools.map(normalizeTool);

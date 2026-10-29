@@ -20,6 +20,11 @@
   Copilot child and SDK environments, like the other credential variables. An
   app server that inherited it no longer reports `signed_out` after a
   successful Floe sign-in.
+- **Copilot connection env.** When `clientOptions.connection` carries its own
+  `env` (for example `RuntimeConnection.forStdio({ env })`), Floe now sets the
+  filtered env only on the connection. Before, it also set the client-level
+  `env`, which the SDK rejects. The account adapter and runtime share one
+  options builder.
 
 ## 0.2.0
 

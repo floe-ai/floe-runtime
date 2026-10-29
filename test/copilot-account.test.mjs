@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { CopilotClient, RuntimeConnection } from '@github/copilot-sdk';
 import {
   CopilotEngineAccountAdapter,
   copilotChildEnvironment,
@@ -119,7 +120,6 @@ test('Copilot account check strips an inherited COPILOT_SDK_AUTH_TOKEN from the 
     clientOptions: {
       baseDirectory: 'C:\\floe-home',
       env: { copilot_sdk_auth_token: 'option-secret' },
-      connection: { env: { COPILOT_SDK_AUTH_TOKEN: 'connection-secret', SAFE_CONNECTION: 'kept' } },
     },
     environment: { ...PARENT_ENVIRONMENT, COPILOT_SDK_AUTH_TOKEN: 'sdk-secret' },
   });
@@ -130,8 +130,6 @@ test('Copilot account check strips an inherited COPILOT_SDK_AUTH_TOKEN from the 
   assert.equal(optionsSeen[0].env.COPILOT_SDK_AUTH_TOKEN, undefined);
   assert.equal(optionsSeen[0].env.copilot_sdk_auth_token, undefined);
   assert.equal(optionsSeen[0].env.SAFE_VALUE, 'kept');
-  assert.equal(optionsSeen[0].connection.env.COPILOT_SDK_AUTH_TOKEN, undefined);
-  assert.equal(optionsSeen[0].connection.env.SAFE_CONNECTION, 'kept');
   assert.deepEqual(
     copilotChildEnvironment({ COPILOT_SDK_AUTH_TOKEN: 'sdk-secret', copilot_sdk_auth_token: 'x', SAFE_VALUE: 'kept' }),
     { SAFE_VALUE: 'kept' },
@@ -146,9 +144,6 @@ test('Copilot account check reports ready and strips parent credentials from the
       models: [{ id: 'gpt-5-mini' }],
       events,
     }],
-    clientOptions: {
-      connection: { env: { COPILOT_HOME: 'C:\\wrong-connection-home', GH_TOKEN: 'ignored', SAFE_CONNECTION: 'kept' } },
-    },
   });
   const states = [];
   adapter.on('state', state => states.push(state));
@@ -164,9 +159,6 @@ test('Copilot account check reports ready and strips parent credentials from the
   assert.equal(states.at(-1).phase, 'ready');
   assert.equal(optionsSeen[0].env.SAFE_VALUE, 'kept');
   assert.equal(optionsSeen[0].env.COPILOT_HOME, 'C:\\floe-home');
-  assert.equal(optionsSeen[0].connection.env.COPILOT_HOME, 'C:\\floe-home');
-  assert.equal(optionsSeen[0].connection.env.GH_TOKEN, undefined);
-  assert.equal(optionsSeen[0].connection.env.SAFE_CONNECTION, 'kept');
   assert.equal(optionsSeen[0].env.COPILOT_GITHUB_TOKEN, undefined);
   assert.equal(optionsSeen[0].env.GH_TOKEN, undefined);
   assert.equal(optionsSeen[0].env.gh_token, undefined);
@@ -175,6 +167,44 @@ test('Copilot account check reports ready and strips parent credentials from the
   assert.equal(optionsSeen[0].gitHubToken, undefined);
   assert.equal(optionsSeen[0].useLoggedInUser, true);
   assert.equal(optionsSeen[0].mode, 'copilot-cli');
+});
+
+test('Copilot account check sets env only on a stdio/tcp connection that carries its own env', async t => {
+  const connectionEnvironment = {
+    COPILOT_HOME: 'C:\\wrong-connection-home',
+    COPILOT_SDK_AUTH_TOKEN: 'sdk-secret',
+    GH_TOKEN: 'ignored',
+    SAFE_CONNECTION: 'kept',
+  };
+  for (const [name, connection] of [
+    ['stdio', RuntimeConnection.forStdio({ path: 'C:\\copilot.exe', env: connectionEnvironment })],
+    ['tcp', RuntimeConnection.forTcp({ port: 9001, env: connectionEnvironment })],
+  ]) {
+    await t.test(name, async () => {
+      const { adapter, optionsSeen } = accountAdapter({
+        clients: [{ auth: { isAuthenticated: true, authType: 'user', login: 'octocat' }, models: [], events: [] }],
+        clientOptions: { connection, env: { FROM_OPTIONS: 'dropped' } },
+      });
+
+      await adapter.check();
+
+      const [options] = optionsSeen;
+      assert.equal('env' in options, false);
+      assert.equal(options.connection.kind, name);
+      assert.deepEqual(options.connection.env, { SAFE_CONNECTION: 'kept', COPILOT_HOME: 'C:\\floe-home' });
+      assert.doesNotThrow(() => new CopilotClient(options));
+    });
+  }
+
+  const { adapter, optionsSeen } = accountAdapter({
+    clients: [{ auth: { isAuthenticated: true, authType: 'user', login: 'octocat' }, models: [], events: [] }],
+    clientOptions: { connection: RuntimeConnection.forStdio({ path: 'C:\\copilot.exe' }) },
+  });
+  await adapter.check();
+  assert.equal(optionsSeen[0].connection.env, undefined);
+  assert.equal(optionsSeen[0].env.COPILOT_HOME, 'C:\\floe-home');
+  assert.equal(optionsSeen[0].env.GH_TOKEN, undefined);
+  assert.doesNotThrow(() => new CopilotClient(optionsSeen[0]));
 });
 
 test('Copilot account check distinguishes signed out, entitlement, policy, and reachability', async t => {

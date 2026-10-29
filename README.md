@@ -365,8 +365,10 @@ can also offer a login the person already has:
   `GITHUB_TOKEN` in the adapter's environment.
 
 While signed out, `state.existingLogins` lists each accepted login that
-Copilot recognises, as `{ source, login, host }`. Nothing is used until the
-person picks one:
+Copilot recognises, as `{ source, login, host }`. Copilot doesn't report the
+account name for a token, so Floe asks GitHub's `GET /user` endpoint; a token
+GitHub doesn't confirm is not offered. Nothing is used until the person picks
+one:
 
 ```js
 const accounts = new CopilotEngineAccountAdapter({

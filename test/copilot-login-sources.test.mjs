@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { CopilotClient, RuntimeConnection } from '@github/copilot-sdk';
 import { CopilotEngineAccountAdapter, CopilotRuntime } from '../src/adapters/copilot.mjs';
 import { saveLoginChoice } from '../src/adapters/copilot-login-sources.mjs';
+import { githubApiBase } from '../src/adapters/github-user.mjs';
 import { FakeCopilotClient } from './fake-copilot-sdk.mjs';
 
 const TEST_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,8 @@ function loginAdapter(t, {
   baseDirectory = scratchDirectory(t),
   connection,
   appAuth = SIGNED_OUT,
+  identities = IDENTITIES,
+  fetch,
 } = {}) {
   const optionsSeen = [];
   const spawnCalls = [];
@@ -72,12 +75,13 @@ function loginAdapter(t, {
   const adapter = new CopilotEngineAccountAdapter({
     clientFactory: options => {
       optionsSeen.push(options);
-      const auth = options.gitHubToken ? IDENTITIES[options.gitHubToken] ?? SIGNED_OUT : appAuth;
+      const auth = options.gitHubToken ? identities[options.gitHubToken] ?? SIGNED_OUT : appAuth;
       return new FakeClient(auth, log);
     },
     clientOptions: { baseDirectory, ...(connection ? { connection } : {}) },
     acceptedLogins,
     environment,
+    fetch,
     spawnProcess: (...args) => {
       spawnCalls.push(args);
       return ghOutput === null ? new FakeGitHubCli('', 1) : new FakeGitHubCli(ghOutput);
@@ -254,6 +258,101 @@ test('runtime refuses to start when the chosen login has no token', async t => {
   try {
     await assert.rejects(runtime.start(), { code: 'copilot_login_unavailable' });
     assert.equal(created, 0);
+  } finally {
+    await runtime.close();
+  }
+});
+
+const TOKEN_ONLY = {
+  'gh-secret': { isAuthenticated: true, authType: 'token' },
+};
+
+function fakeFetch(responses) {
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({ url, init });
+    const { status = 200, body = {} } = responses.shift() ?? {};
+    return { ok: status >= 200 && status < 300, status, json: async () => body };
+  };
+  return { fetch, calls };
+}
+
+test('a token login without an SDK login name is identified through GitHub /user', async t => {
+  const { fetch, calls } = fakeFetch([{ body: { login: 'cli-user' } }, { body: { login: 'cli-user' } }, { body: { login: 'cli-user' } }]);
+  const { adapter, states, baseDirectory } = loginAdapter(t, {
+    acceptedLogins: ['app', 'github-cli'],
+    identities: TOKEN_ONLY,
+    fetch,
+  });
+
+  const signedOut = await adapter.check();
+  assert.deepEqual(signedOut.existingLogins, [{ source: 'github-cli', login: 'cli-user' }]);
+  assert.equal(calls[0].url, 'https://api.github.com/user');
+  assert.deepEqual(calls[0].init.headers, {
+    Accept: 'application/vnd.github+json',
+    Authorization: 'Bearer gh-secret',
+    'X-GitHub-Api-Version': '2022-11-28',
+  });
+  assert.ok(calls[0].init.signal instanceof AbortSignal);
+
+  const ready = await adapter.useExistingLogin('github-cli');
+  assert.equal(ready.phase, 'ready');
+  assert.deepEqual(ready.account, { label: 'cli-user' });
+  assert.equal(ready.loginSource, 'github-cli');
+  assert.doesNotMatch(readFileSync(choiceFile(baseDirectory), 'utf8'), SECRETS);
+  assert.doesNotMatch(JSON.stringify(states), SECRETS);
+});
+
+test('a token GitHub /user does not confirm is not offered', async t => {
+  for (const response of [{ status: 401, body: { message: 'Bad credentials' } }, { body: {} }]) {
+    const { fetch } = fakeFetch([response, response]);
+    const { adapter } = loginAdapter(t, {
+      acceptedLogins: ['app', 'github-cli'],
+      identities: TOKEN_ONLY,
+      fetch,
+    });
+    const state = await adapter.check();
+    assert.deepEqual(state.existingLogins, []);
+    await assert.rejects(adapter.useExistingLogin('github-cli'), { code: 'existing_login_not_found' });
+  }
+  const failing = loginAdapter(t, {
+    acceptedLogins: ['app', 'github-cli'],
+    identities: TOKEN_ONLY,
+    fetch: async () => { throw new Error('offline'); },
+  });
+  assert.deepEqual((await failing.adapter.check()).existingLogins, []);
+});
+
+test('GitHub REST base follows the Copilot host', () => {
+  assert.equal(githubApiBase(undefined), 'https://api.github.com');
+  assert.equal(githubApiBase('https://github.com'), 'https://api.github.com');
+  assert.equal(githubApiBase('https://octo.ghe.com'), 'https://api.octo.ghe.com');
+  assert.equal(githubApiBase('github.example.com'), 'https://github.example.com/api/v3');
+});
+
+test('runtime confirms a chosen token login through GitHub /user when the SDK omits it', async t => {
+  const baseDirectory = scratchDirectory(t);
+  await saveLoginChoice(baseDirectory, 'environment');
+  const { fetch, calls } = fakeFetch([{ body: { login: 'env-user' } }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const runtime = new CopilotRuntime({
+    clientFactory: options => {
+      const client = new FakeCopilotClient(options);
+      client.authStatus = { isAuthenticated: true, authType: 'token' };
+      return client;
+    },
+    clientOptions: { baseDirectory, env: { COPILOT_GITHUB_TOKEN: 'env-secret' } },
+    expectedAccount: { label: 'env-user' },
+    timeoutMs: 100,
+    quiesceTimeoutMs: 25,
+  });
+  try {
+    const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
+    assert.deepEqual(result.report, { ok: true, summary: 'done' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init.headers.Authorization, 'Bearer env-secret');
   } finally {
     await runtime.close();
   }

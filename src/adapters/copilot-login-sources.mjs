@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { RuntimeFault } from '../errors.mjs';
+import { githubUserLogin } from './github-user.mjs';
 
 export const LOGIN_SOURCES = Object.freeze(['app', 'github-cli', 'environment']);
 export const LOGIN_CHOICE_FILE = 'floe-login.json';
@@ -156,14 +157,24 @@ export async function resolveSavedLogin({
   return gitHubToken ? { source, gitHubToken } : { source };
 }
 
-async function identify(gitHubToken, createClient, stopClient) {
+/**
+ * Identity for a token Copilot accepted. The SDK's getAuthStatus() proves Copilot accepts the token
+ * (and may give the host) but, for gitHubToken clients, may omit the login; GitHub's /user then supplies it.
+ */
+export async function tokenIdentity(auth, gitHubToken, fetchImpl) {
+  if (!auth?.isAuthenticated) return undefined;
+  const login = typeof auth.login === 'string' && auth.login
+    ? auth.login
+    : await githubUserLogin(gitHubToken, auth.host, fetchImpl);
+  return login ? { login, ...(auth.host ? { host: auth.host } : {}) } : undefined;
+}
+
+async function identify(gitHubToken, { createClient, stopClient, fetchImpl }) {
   let client;
   try {
     client = await createClient(gitHubToken);
     await client.start();
-    const auth = await client.getAuthStatus();
-    if (!auth?.isAuthenticated || typeof auth.login !== 'string') return undefined;
-    return { login: auth.login, ...(auth.host ? { host: auth.host } : {}) };
+    return await tokenIdentity(await client.getAuthStatus(), gitHubToken, fetchImpl);
   } catch {
     return undefined;
   } finally {
@@ -175,11 +186,11 @@ async function identify(gitHubToken, createClient, stopClient) {
  * Finds which of the given sources currently hold a login Copilot accepts, using a short-lived
  * client per token (createClient) that is always stopped (stopClient). Returns { source, login, host? }.
  */
-export async function discoverExistingLogins(sources, { createClient, stopClient, ...context }) {
+export async function discoverExistingLogins(sources, { createClient, stopClient, fetchImpl, ...context }) {
   const found = [];
   for (const source of sources) {
     const token = await resolveLoginToken(source, context);
-    const identity = token ? await identify(token, createClient, stopClient) : undefined;
+    const identity = token ? await identify(token, { createClient, stopClient, fetchImpl }) : undefined;
     if (identity) found.push({ source, ...identity });
   }
   return found;

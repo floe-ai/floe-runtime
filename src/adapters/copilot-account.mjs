@@ -20,6 +20,7 @@ import {
   normalizeAcceptedLogins,
   resolveSavedLogin,
   saveLoginChoice,
+  tokenIdentity,
 } from './copilot-login-sources.mjs';
 
 export { copilotChildEnvironment };
@@ -142,6 +143,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
     environment = process.env,
     spawnProcess = spawn,
     openUrl = openSystemBrowser,
+    fetch: fetchImpl = globalThis.fetch,
     now = () => new Date().toISOString(),
     operationId = () => randomUUID(),
   } = {}) {
@@ -156,6 +158,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
     this.environment = environment;
     this.spawnProcess = spawnProcess;
     this.openUrl = openUrl;
+    this.fetchImpl = fetchImpl;
     this.now = now;
     this.operationId = operationId;
     this.revision = 0;
@@ -259,7 +262,9 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
         return this.#publishSignedOut(signedOutMessage);
       }
 
-      const account = accountOf(auth);
+      const account = accountOf(login.gitHubToken
+        ? await tokenIdentity(auth, login.gitHubToken, this.fetchImpl) ?? {}
+        : auth);
       const identity = { account, loginSource: login.source };
       const using = login.source === 'app' ? '' : ` using your ${loginSourceLabel(login.source)}`;
       try {
@@ -623,7 +628,12 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
   }
 
   #loginContext() {
-    return { clientOptions: this.clientOptions, environment: this.environment, spawnProcess: this.spawnProcess };
+    return {
+      clientOptions: this.clientOptions,
+      environment: this.environment,
+      spawnProcess: this.spawnProcess,
+      fetchImpl: this.fetchImpl,
+    };
   }
 
   #signedOutMessage(auth, login) {

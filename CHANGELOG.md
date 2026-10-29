@@ -19,6 +19,8 @@
   saves the person's choice (never the token) and `forgetExistingLogin()`
   clears it. The account adapter and runtime both use the chosen login, with
   no silent fallback. The default `['app']` keeps the old behaviour.
+  Because Copilot reports no account name for a token, Floe names it with
+  GitHub's `GET /user`.
 
 ### Fixed
 

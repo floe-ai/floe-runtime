@@ -124,6 +124,8 @@ export interface CopilotEngineAccountAdapterOptions {
   environment?: Record<string, string | undefined>;
   spawnProcess?: (...args: any[]) => any;
   openUrl?: (url: string) => void | Promise<void>;
+  /** Used for GitHub's `GET /user` to name an existing login. Defaults to global fetch. */
+  fetch?: typeof fetch;
   now?: () => string;
   operationId?: () => string;
 }

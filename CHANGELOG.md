@@ -13,9 +13,17 @@
   answer types. The Copilot login RPC is experimental in SDK 1.0.19; plaintext
   consent is surfaced but cannot be answered until the SDK documents its wire
   format.
+- **Existing Copilot logins.** `acceptedLogins` lets an app offer the GitHub
+  CLI login or an environment token alongside Floe's own sign-in.
+  Signed-out readiness lists them in `existingLogins`; `useExistingLogin()`
+  saves the person's choice (never the token) and `forgetExistingLogin()`
+  clears it. The account adapter and runtime both use the chosen login, with
+  no silent fallback. The default `['app']` keeps the old behaviour.
 
 ### Fixed
 
+- **External server connection.** With `RuntimeConnection.forUri`, Floe no
+  longer sets `useLoggedInUser`, which the SDK rejects for that connection.
 - **Inherited SDK auth token.** `COPILOT_SDK_AUTH_TOKEN` is now stripped from
   Copilot child and SDK environments, like the other credential variables. An
   app server that inherited it no longer reports `signed_out` after a

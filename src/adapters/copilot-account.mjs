@@ -1,7 +1,7 @@
 /**
- * @invariant Copilot readiness accepts only the vendor-managed user OAuth
- * identity; ambient process credentials and keytar-disabling overrides never
- * reach the SDK child. The session login RPC is experimental; provider/step
+ * @invariant Copilot readiness accepts the vendor-managed user OAuth identity, or a login the person
+ * explicitly chose from the app's acceptedLogins. Ambient process credentials and keytar-disabling
+ * overrides never reach the SDK child. The session login RPC is experimental; provider/step
  * mappings stay here and unsupported answers are surfaced without guessing.
  */
 import { spawn } from 'node:child_process';
@@ -9,14 +9,21 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { CopilotClient } from '@github/copilot-sdk';
 import { RuntimeFault } from '../errors.mjs';
+import {
+  CHOSEN_LOGIN_AUTH_TYPES,
+  LOGIN_SOURCES,
+  clearLoginChoice,
+  copilotChildEnvironment,
+  discoverExistingLogins,
+  existingLoginsUnavailableReason,
+  loginSourceLabel,
+  normalizeAcceptedLogins,
+  resolveSavedLogin,
+  saveLoginChoice,
+} from './copilot-login-sources.mjs';
 
-const CREDENTIAL_ENVIRONMENT_KEYS = new Set([
-  'COPILOT_GITHUB_TOKEN',
-  'COPILOT_DISABLE_KEYTAR',
-  'COPILOT_SDK_AUTH_TOKEN',
-  'GH_TOKEN',
-  'GITHUB_TOKEN',
-]);
+export { copilotChildEnvironment };
+
 const PROCESS_GLOBAL_AUTH_TYPES = new Set(['env', 'token', 'api-key', 'gh-cli']);
 const NOT_ENTITLED_CODES = new Set([
   'copilot_not_entitled',
@@ -51,12 +58,6 @@ const PROCESS_GLOBAL_AUTH_MESSAGES = Object.freeze({
   'gh-cli': "Copilot isn't signed in for Floe. Floe found your GitHub CLI login, but doesn't use it. Sign in to use Copilot here.",
 });
 
-export function copilotChildEnvironment(environment = process.env) {
-  return Object.fromEntries(
-    Object.entries(environment).filter(([key]) => !CREDENTIAL_ENVIRONMENT_KEYS.has(key.toUpperCase())),
-  );
-}
-
 export function copilotEnvironmentForHome(environment, baseDirectory) {
   const withoutHome = Object.fromEntries(
     Object.entries(environment).filter(([key]) => key.toUpperCase() !== 'COPILOT_HOME'),
@@ -72,14 +73,21 @@ export function copilotConnectionForHome(connection, baseDirectory) {
   };
 }
 
+function loginOptions(connection, gitHubToken) {
+  // The SDK rejects gitHubToken and useLoggedInUser with RuntimeConnection.forUri.
+  if (connection?.kind === 'uri') return {};
+  return gitHubToken ? { gitHubToken, useLoggedInUser: false } : { useLoggedInUser: true };
+}
+
 /**
  * SDK client options isolated to Floe's Copilot home. The SDK rejects env on both the client and a
  * stdio/tcp connection, so a connection that carries its own env gets the only (filtered) env.
+ * Only a token resolved from the person's saved login choice is passed as gitHubToken.
  */
-export function copilotSdkClientOptions(clientOptions, environment = process.env) {
+export function copilotSdkClientOptions(clientOptions, environment = process.env, gitHubToken) {
   const { gitHubToken: _ignoredToken, connection, env: optionEnvironment, ...options } = clientOptions;
   const { baseDirectory } = clientOptions;
-  const isolated = { ...options, mode: 'copilot-cli', useLoggedInUser: true };
+  const isolated = { ...options, mode: 'copilot-cli', ...loginOptions(connection, gitHubToken) };
   if (connection?.env) {
     return { ...isolated, connection: copilotConnectionForHome(connection, baseDirectory) };
   }
@@ -129,6 +137,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
   constructor({
     clientFactory = options => new CopilotClient(options),
     clientOptions = {},
+    acceptedLogins,
     cliPath,
     environment = process.env,
     spawnProcess = spawn,
@@ -142,6 +151,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
     }
     this.clientFactory = clientFactory;
     this.clientOptions = clientOptions;
+    this.acceptedLogins = normalizeAcceptedLogins(acceptedLogins);
     this.cliPath = cliPath;
     this.environment = environment;
     this.spawnProcess = spawnProcess;
@@ -164,7 +174,11 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
   }
 
   currentState() {
-    return { ...this.current, ...(this.current.account ? { account: { ...this.current.account } } : {}) };
+    return {
+      ...this.current,
+      ...(this.current.account ? { account: { ...this.current.account } } : {}),
+      ...(this.current.existingLogins ? { existingLogins: this.current.existingLogins.map(login => ({ ...login })) } : {}),
+    };
   }
 
   async check() {
@@ -186,9 +200,29 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
       message: 'Checking Copilot.',
     });
 
+    let login;
+    try {
+      login = await this.#resolveLogin();
+    } catch {
+      return this.#publishState({
+        phase: 'unavailable',
+        authentication: 'unknown',
+        access: 'unknown',
+        reachability: 'unknown',
+        action: 'retry',
+        message: "Floe couldn't read your saved Copilot login choice.",
+      });
+    }
+    if (!login.gitHubToken && login.source !== 'app') {
+      return this.#publishSignedOut(
+        login.unavailable ?? `Floe is set to use your ${loginSourceLabel(login.source)}, but it isn't available now. Choose another login or sign in.`,
+        'unknown',
+      );
+    }
+
     let client;
     try {
-      client = await this.clientFactory(this.#sdkOptions());
+      client = await this.clientFactory(this.#sdkOptions(login.gitHubToken));
       await client.start();
       await client.ping();
     } catch {
@@ -218,29 +252,16 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
         });
       }
 
-      if (!auth?.isAuthenticated) {
-        return this.#publishState({
-          phase: 'action_required',
-          authentication: 'signed_out',
-          access: 'unknown',
-          reachability: 'reachable',
-          action: 'sign_in',
-          message: 'Copilot is not signed in on this machine.',
-        });
-      }
-
-      if (PROCESS_GLOBAL_AUTH_TYPES.has(auth.authType)) {
-        return this.#publishState({
-          phase: 'action_required',
-          authentication: 'signed_out',
-          access: 'unknown',
-          reachability: 'reachable',
-          action: 'sign_in',
-          message: PROCESS_GLOBAL_AUTH_MESSAGES[auth.authType],
-        });
+      const signedOutMessage = this.#signedOutMessage(auth, login);
+      if (signedOutMessage) {
+        await this.#stopClient(client);
+        client = undefined;
+        return this.#publishSignedOut(signedOutMessage);
       }
 
       const account = accountOf(auth);
+      const identity = { account, loginSource: login.source };
+      const using = login.source === 'app' ? '' : ` using your ${loginSourceLabel(login.source)}`;
       try {
         const models = await client.listModels();
         if (!Array.isArray(models) || models.length === 0) {
@@ -249,7 +270,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
             authentication: 'signed_in',
             access: 'unknown',
             reachability: 'reachable',
-            account,
+            ...identity,
             action: 'retry',
             message: `Signed in${account ? ` as ${account.label}` : ''}, but Copilot access could not be confirmed.`,
           });
@@ -259,8 +280,8 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
           authentication: 'signed_in',
           access: 'entitled',
           reachability: 'reachable',
-          account,
-          message: `Copilot is ready${account ? ` for ${account.label}` : ''}.`,
+          ...identity,
+          message: `Copilot is ready${account ? ` for ${account.label}` : ''}${using}.`,
         });
       } catch (error) {
         const code = errorCode(error);
@@ -270,7 +291,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
             authentication: 'signed_in',
             access: 'not_entitled',
             reachability: 'reachable',
-            account,
+            ...identity,
             action: 'check_subscription',
             message: `Signed in${account ? ` as ${account.label}` : ''}, but this account has no Copilot plan usable by the CLI.`,
           });
@@ -281,7 +302,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
             authentication: 'signed_in',
             access: 'policy_blocked',
             reachability: 'reachable',
-            account,
+            ...identity,
             action: 'contact_admin',
             message: `Signed in${account ? ` as ${account.label}` : ''}, but the organization has disabled Copilot CLI.`,
           });
@@ -291,7 +312,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
           authentication: 'signed_in',
           access: 'unknown',
           reachability: 'reachable',
-          account,
+          ...identity,
           action: 'retry',
           message: `Signed in${account ? ` as ${account.label}` : ''}, but Copilot access could not be confirmed.`,
         });
@@ -588,8 +609,109 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
     }
   }
 
-  #sdkOptions() {
-    return copilotSdkClientOptions(this.clientOptions, this.environment);
+  #sdkOptions(gitHubToken) {
+    return copilotSdkClientOptions(this.clientOptions, this.environment, gitHubToken);
+  }
+
+  /** Logins other than the app's own sign-in that this app accepts. */
+  #existingLoginSources() {
+    return this.acceptedLogins.filter(source => source !== 'app');
+  }
+
+  #resolveLogin() {
+    return resolveSavedLogin({ ...this.#loginContext(), acceptedLogins: this.acceptedLogins });
+  }
+
+  #loginContext() {
+    return { clientOptions: this.clientOptions, environment: this.environment, spawnProcess: this.spawnProcess };
+  }
+
+  #signedOutMessage(auth, login) {
+    if (!auth?.isAuthenticated) {
+      return login.source === 'app'
+        ? 'Copilot is not signed in on this machine.'
+        : `Copilot didn't accept your ${loginSourceLabel(login.source)}. Choose another login or sign in.`;
+    }
+    if (!PROCESS_GLOBAL_AUTH_TYPES.has(auth.authType)) return undefined;
+    if (login.gitHubToken && CHOSEN_LOGIN_AUTH_TYPES.has(auth.authType)) return undefined;
+    return PROCESS_GLOBAL_AUTH_MESSAGES[auth.authType];
+  }
+
+  async #publishSignedOut(message, reachability = 'reachable') {
+    return this.#publishState({
+      phase: 'action_required',
+      authentication: 'signed_out',
+      access: 'unknown',
+      reachability,
+      action: 'sign_in',
+      message,
+      ...(await this.#existingLoginsState()),
+    });
+  }
+
+  async #existingLoginsState() {
+    const sources = this.#existingLoginSources();
+    if (sources.length === 0) return {};
+    const unavailable = existingLoginsUnavailableReason(this.clientOptions);
+    if (unavailable) return { existingLogins: [], existingLoginsUnavailable: unavailable };
+    return { existingLogins: await this.#discoverExistingLogins(sources) };
+  }
+
+  #discoverExistingLogins(sources) {
+    return discoverExistingLogins(sources, {
+      ...this.#loginContext(),
+      createClient: gitHubToken => this.clientFactory(this.#sdkOptions(gitHubToken)),
+      stopClient: client => this.#stopClient(client),
+    });
+  }
+
+  /** Saves the person's choice of an existing login (never its token), then rechecks readiness. */
+  async useExistingLogin(source) {
+    if (!LOGIN_SOURCES.includes(source) || source === 'app') {
+      throw new RuntimeFault('invalid_login_source', `Unsupported existing Copilot login '${source}'.`, 400);
+    }
+    if (!this.acceptedLogins.includes(source)) {
+      throw new RuntimeFault('login_source_not_accepted', `This app doesn't accept your ${loginSourceLabel(source)}.`, 400);
+    }
+    const unavailable = existingLoginsUnavailableReason(this.clientOptions);
+    if (unavailable) throw new RuntimeFault('existing_login_unavailable', unavailable, 409);
+    const [found] = await this.#discoverExistingLogins([source]);
+    if (!found) {
+      throw new RuntimeFault('existing_login_not_found', `Floe couldn't find a usable ${loginSourceLabel(source)}.`, 404);
+    }
+    try {
+      await saveLoginChoice(this.clientOptions.baseDirectory, source);
+    } catch {
+      throw new RuntimeFault('login_choice_not_saved', "Floe couldn't save your Copilot login choice.", 500);
+    }
+    return this.#recheck();
+  }
+
+  /** Forgets a saved existing-login choice so Floe uses its own sign-in again, then rechecks readiness. */
+  async forgetExistingLogin() {
+    try {
+      await clearLoginChoice(this.clientOptions.baseDirectory);
+    } catch {
+      throw new RuntimeFault('login_choice_not_saved', "Floe couldn't forget your Copilot login choice.", 500);
+    }
+    return this.#recheck();
+  }
+
+  async #recheck() {
+    if (this.checking) await this.checking;
+    return this.check();
+  }
+
+  /** Completing Floe's own sign-in is the person choosing it, so a saved existing-login choice is dropped. */
+  async #recheckAfterSignIn(outcome) {
+    if (outcome === 'completed') {
+      try {
+        await clearLoginChoice(this.clientOptions.baseDirectory);
+      } catch {
+        this.emit('diagnostic', 'Copilot existing-login choice could not be cleared after sign-in.');
+      }
+    }
+    return this.#recheck();
   }
 
   async #stopClient(client) {
@@ -604,8 +726,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
   async #finishDeviceSignIn(operation, outcome) {
     if (operation.finished) return;
     operation.finished = true;
-    if (this.checking) await this.checking;
-    const state = await this.check();
+    const state = await this.#recheckAfterSignIn(outcome);
 
     if (outcome === 'cancelled') {
       this.#publishSignIn(operation, 'cancelled', 'GitHub sign-in was cancelled.');
@@ -634,8 +755,7 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
       this.emit('diagnostic', 'Copilot sign-in session could not be disconnected cleanly.');
     }
     await this.#stopClient(operation.client);
-    if (this.checking) await this.checking;
-    const state = await this.check();
+    const state = await this.#recheckAfterSignIn(outcome);
     if (outcome === 'cancelled') {
       this.#publishSignIn(operation, 'cancelled', 'Sign-in was cancelled.');
     } else if (outcome === 'declined') {

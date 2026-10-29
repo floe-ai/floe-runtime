@@ -22,6 +22,7 @@ import {
   resolveCopilotToolSelection,
 } from './copilot-tools.mjs';
 import { copilotSdkClientOptions } from './copilot-account.mjs';
+import { CHOSEN_LOGIN_AUTH_TYPES, loginSourceLabel, resolveSavedLogin } from './copilot-login-sources.mjs';
 import { copilotSystemMessage, floeBaseSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
@@ -42,6 +43,7 @@ const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;
 const DEFAULT_PROGRESS_TIMEOUT_MS = 120000;
 const PROCESS_EXECUTION_TOOLS = new Set(['bash', 'powershell']);
 const TOKEN_USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'];
+const APP_LOGIN_AUTH_TYPES = new Set(['user']);
 
 function sdkError(code, message, status = 502, cause) {
   const error = new RuntimeFault(code, message, status);
@@ -167,7 +169,8 @@ export class CopilotRuntime extends Runtime {
     this.progressTimeoutMs = progressTimeoutMs;
     this.client = client;
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
-    this.clientOptions = copilotSdkClientOptions(clientOptions);
+    this.clientOptions = clientOptions;
+    this.loginSource = 'app';
     this.systemMessage = systemMessage;
     layeredSystemMessage(systemMessage); // rejects a malformed application layer at construction
     this.tools = tools.map(normalizeTool);
@@ -199,17 +202,32 @@ export class CopilotRuntime extends Runtime {
     if (this.starting) return this.starting;
     this.starting = (async () => {
       try {
-        if (!this.client) this.client = await this.clientFactory(this.clientOptions);
+        if (!this.client) this.client = await this.clientFactory(await this.#sdkOptions());
         await this.client.start();
         this.ready = true;
         this.info = { backend: 'copilot-sdk', sdkVersion: '1.0.19' };
         this.emit('ready', this.info);
         return this.info;
       } catch (error) {
+        if (error?.code === 'copilot_login_unavailable') throw error;
         throw sdkError('copilot_unavailable', `Copilot SDK could not start: ${error.message}`, 503, error);
       }
     })();
     try { return await this.starting; } finally { this.starting = null; }
+  }
+
+  /** Each new client gets a freshly resolved token when the person chose an existing login; there is no fallback. */
+  async #sdkOptions() {
+    const login = await resolveSavedLogin({ clientOptions: this.clientOptions });
+    if (login.source !== 'app' && !login.gitHubToken) {
+      throw sdkError(
+        'copilot_login_unavailable',
+        login.unavailable ?? `Floe is set to use your ${loginSourceLabel(login.source)}, but it isn't available now. Check Copilot readiness.`,
+        401,
+      );
+    }
+    this.loginSource = login.source;
+    return copilotSdkClientOptions(this.clientOptions, process.env, login.gitHubToken);
   }
 
   async models() {
@@ -388,8 +406,10 @@ export class CopilotRuntime extends Runtime {
     if (!auth?.isAuthenticated) {
       throw sdkError('copilot_account_mismatch', `Copilot session is not authenticated as the readiness account '${this.expectedAccount.label}'.`, 409);
     }
-    if (auth.authType !== 'user') {
-      throw sdkError('copilot_account_mismatch', `Copilot session selected '${auth.authType || 'unknown'}' authentication instead of the readiness OAuth account '${this.expectedAccount.label}'.`, 409);
+    const acceptedAuthTypes = this.loginSource === 'app' ? APP_LOGIN_AUTH_TYPES : CHOSEN_LOGIN_AUTH_TYPES;
+    if (!acceptedAuthTypes.has(auth.authType)) {
+      const expected = this.loginSource === 'app' ? 'readiness OAuth account' : `readiness ${loginSourceLabel(this.loginSource)}`;
+      throw sdkError('copilot_account_mismatch', `Copilot session selected '${auth.authType || 'unknown'}' authentication instead of the ${expected} '${this.expectedAccount.label}'.`, 409);
     }
     if (typeof auth.login !== 'string' || auth.login.toLowerCase() !== this.expectedAccount.label.toLowerCase()) {
       throw sdkError('copilot_account_mismatch', `Copilot session authenticated as '${auth.login || 'unknown'}' instead of readiness account '${this.expectedAccount.label}'.`, 409);

@@ -21,7 +21,7 @@ import {
   prepareCopilotToolSession,
   resolveCopilotToolSelection,
 } from './copilot-tools.mjs';
-import { copilotChildEnvironment } from './copilot-account.mjs';
+import { copilotConnectionForHome, copilotEnvironmentForHome } from './copilot-account.mjs';
 import { copilotSystemMessage, floeBaseSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
@@ -76,12 +76,13 @@ function modelState(model, settings = {}) {
 }
 
 function isolatedClientOptions(clientOptions) {
-  const { gitHubToken: _ignoredToken, env: optionEnvironment, ...options } = clientOptions;
+  const { gitHubToken: _ignoredToken, connection, env: optionEnvironment, ...options } = clientOptions;
   return {
     ...options,
+    ...(connection ? { connection: copilotConnectionForHome(connection, clientOptions.baseDirectory) } : {}),
     mode: 'copilot-cli',
     useLoggedInUser: true,
-    env: copilotChildEnvironment({ ...process.env, ...optionEnvironment }),
+    env: copilotEnvironmentForHome({ ...process.env, ...optionEnvironment }, clientOptions.baseDirectory),
   };
 }
 

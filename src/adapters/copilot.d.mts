@@ -23,8 +23,8 @@ export type EngineAuthentication = 'unknown' | 'signed_out' | 'signed_in' | 'not
 export type EngineAccess = 'unknown' | 'entitled' | 'not_entitled' | 'policy_blocked';
 export type EngineReachability = 'unknown' | 'reachable' | 'unreachable';
 
-export interface EngineAccountState {
-  engine: 'copilot';
+export interface AccountState {
+  engine: string;
   phase: 'checking' | 'ready' | 'action_required' | 'unavailable';
   authentication: EngineAuthentication;
   access: EngineAccess;
@@ -36,19 +36,77 @@ export interface EngineAccountState {
   revision: number;
 }
 
-export interface SignInProgress {
-  operationId: string;
+export interface EngineAccountState extends AccountState {
   engine: 'copilot';
-  status: 'starting' | 'waiting_for_person' | 'succeeded' | 'failed' | 'cancelled';
+}
+
+export type AccountSignInProvider = 'github' | 'github-enterprise-cloud' | 'microsoft-entra';
+
+export interface SignInAccountChoice {
+  selectionId: string;
+  login: string;
+  host: string;
+  provider: string;
+}
+
+export type SignInUserAction =
+  | { kind: 'open_url'; url: string }
+  | { kind: 'input_required'; prompt: string }
+  | { kind: 'needs_interaction' }
+  | { kind: 'awaiting' }
+  | { kind: 'account_selection'; accounts: SignInAccountChoice[] }
+  | { kind: 'plaintext_consent' };
+
+export type AccountSignInStatus =
+  | 'starting'
+  | 'waiting_for_person'
+  | 'awaiting_input'
+  | 'needs_interaction'
+  | 'needs_account_selection'
+  | 'needs_plaintext_consent'
+  | 'succeeded'
+  | 'declined'
+  | 'failed'
+  | 'cancelled';
+
+export interface AccountSignInProgress {
+  operationId: string;
+  engine: string;
+  provider: string;
+  status: AccountSignInStatus;
   message: string;
+  action?: SignInUserAction;
+}
+
+export interface SignInProgress extends AccountSignInProgress {
+  engine: 'copilot';
+  provider: AccountSignInProvider;
+}
+
+export type SignInAnswer =
+  | { kind: 'continue' }
+  | { kind: 'input'; value: string }
+  | { kind: 'select_account'; selectionId: string }
+  | { kind: 'plaintext_consent'; accepted: boolean };
+
+export interface AccountSignInAdapter {
+  currentState(): AccountState;
+  check(): Promise<AccountState>;
+  signIn(options?: { provider?: AccountSignInProvider; openBrowser?: boolean }): Promise<{ id: string }>;
+  continueSignIn(id: string, answer: SignInAnswer): Promise<void>;
+  cancelSignIn(id: string): Promise<void>;
+  close(): Promise<void>;
+  on(event: 'state', listener: (state: AccountState) => void): this;
+  on(event: 'sign_in', listener: (progress: AccountSignInProgress) => void): this;
 }
 
 export interface CopilotEngineAccountAdapterOptions {
   clientFactory?: (options: Record<string, unknown>) => unknown | Promise<unknown>;
-  clientOptions?: Record<string, unknown>;
+  clientOptions: Record<string, unknown> & { baseDirectory: string };
   cliPath?: string;
   environment?: Record<string, string | undefined>;
   spawnProcess?: (...args: any[]) => any;
+  openUrl?: (url: string) => void | Promise<void>;
   now?: () => string;
   operationId?: () => string;
 }
@@ -58,10 +116,16 @@ export function copilotChildEnvironment(
 ): Record<string, string | undefined>;
 
 export class CopilotEngineAccountAdapter extends EventEmitter {
-  constructor(options?: CopilotEngineAccountAdapterOptions);
+  constructor(options: CopilotEngineAccountAdapterOptions);
   currentState(): EngineAccountState;
   check(): Promise<EngineAccountState>;
-  signIn(options?: { mode?: 'browser' | 'device' }): Promise<{ id: string }>;
+  signIn(options?: {
+    provider?: AccountSignInProvider;
+    openBrowser?: boolean;
+    /** @deprecated Use provider and openBrowser. `device` retains the CLI compatibility path. */
+    mode?: 'browser' | 'device';
+  }): Promise<{ id: string }>;
+  continueSignIn(id: string, answer: SignInAnswer): Promise<void>;
   cancelSignIn(id: string): Promise<void>;
   close(): Promise<void>;
   on(event: 'state', listener: (state: EngineAccountState) => void): this;

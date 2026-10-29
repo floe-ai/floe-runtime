@@ -14,6 +14,13 @@
   consent is surfaced but cannot be answered until the SDK documents its wire
   format.
 
+### Fixed
+
+- **Inherited SDK auth token.** `COPILOT_SDK_AUTH_TOKEN` is now stripped from
+  Copilot child and SDK environments, like the other credential variables. An
+  app server that inherited it no longer reports `signed_out` after a
+  successful Floe sign-in.
+
 ## 0.2.0
 
 ### Added

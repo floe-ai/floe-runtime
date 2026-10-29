@@ -105,6 +105,39 @@ function accountAdapter({
   return { adapter, optionsSeen };
 }
 
+test('Copilot account check strips an inherited COPILOT_SDK_AUTH_TOKEN from the SDK client environment', async () => {
+  const optionsSeen = [];
+  const adapter = new CopilotEngineAccountAdapter({
+    clientFactory: options => {
+      optionsSeen.push(options);
+      return new FakeAccountClient({
+        auth: { isAuthenticated: true, authType: 'user', login: 'octocat' },
+        models: [{ id: 'gpt-5-mini' }],
+        events: [],
+      });
+    },
+    clientOptions: {
+      baseDirectory: 'C:\\floe-home',
+      env: { copilot_sdk_auth_token: 'option-secret' },
+      connection: { env: { COPILOT_SDK_AUTH_TOKEN: 'connection-secret', SAFE_CONNECTION: 'kept' } },
+    },
+    environment: { ...PARENT_ENVIRONMENT, COPILOT_SDK_AUTH_TOKEN: 'sdk-secret' },
+  });
+
+  const state = await adapter.check();
+
+  assert.equal(state.authentication, 'signed_in');
+  assert.equal(optionsSeen[0].env.COPILOT_SDK_AUTH_TOKEN, undefined);
+  assert.equal(optionsSeen[0].env.copilot_sdk_auth_token, undefined);
+  assert.equal(optionsSeen[0].env.SAFE_VALUE, 'kept');
+  assert.equal(optionsSeen[0].connection.env.COPILOT_SDK_AUTH_TOKEN, undefined);
+  assert.equal(optionsSeen[0].connection.env.SAFE_CONNECTION, 'kept');
+  assert.deepEqual(
+    copilotChildEnvironment({ COPILOT_SDK_AUTH_TOKEN: 'sdk-secret', copilot_sdk_auth_token: 'x', SAFE_VALUE: 'kept' }),
+    { SAFE_VALUE: 'kept' },
+  );
+});
+
 test('Copilot account check reports ready and strips parent credentials from the SDK child', async () => {
   const events = [];
   const { adapter, optionsSeen } = accountAdapter({

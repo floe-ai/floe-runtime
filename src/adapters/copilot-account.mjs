@@ -13,6 +13,7 @@ import { RuntimeFault } from '../errors.mjs';
 const CREDENTIAL_ENVIRONMENT_KEYS = new Set([
   'COPILOT_GITHUB_TOKEN',
   'COPILOT_DISABLE_KEYTAR',
+  'COPILOT_SDK_AUTH_TOKEN',
   'GH_TOKEN',
   'GITHUB_TOKEN',
 ]);

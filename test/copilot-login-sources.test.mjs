@@ -118,6 +118,10 @@ test('signed-out readiness offers GitHub CLI and environment logins without expo
     { source: 'github-cli', login: 'cli-user', host: 'https://github.com' },
     { source: 'environment', login: 'env-user', host: 'https://github.com' },
   ]);
+  assert.equal(
+    state.message,
+    "Copilot isn't signed in for Floe. You can use your GitHub CLI login (cli-user) or your environment token (env-user), or sign in.",
+  );
   const [command, args, spawnOptions] = spawnCalls[0];
   assert.equal(command, 'gh');
   assert.deepEqual(args, ['auth', 'token']);
@@ -127,6 +131,20 @@ test('signed-out readiness offers GitHub CLI and environment logins without expo
   assert.deepEqual(optionsSeen.map(options => options.gitHubToken), [undefined, 'gh-secret', 'env-secret']);
   assert.equal(log.filter(entry => entry === 'start').length, log.filter(entry => entry === 'stop').length);
   assert.doesNotMatch(JSON.stringify([states, adapter.currentState()]), SECRETS);
+});
+
+test('signed-out message offers a discovered GitHub CLI login instead of saying Floe ignores it', async t => {
+  const appAuth = { isAuthenticated: true, authType: 'gh-cli', login: 'cli-user', host: 'https://github.com' };
+  const offered = await loginAdapter(t, { acceptedLogins: ['app', 'github-cli'], environment: { PATH: 'C:\\tools' }, appAuth }).adapter.check();
+  const appOnly = await loginAdapter(t, { environment: { PATH: 'C:\\tools' }, appAuth }).adapter.check();
+
+  assert.deepEqual(offered.existingLogins, [{ source: 'github-cli', login: 'cli-user', host: 'https://github.com' }]);
+  assert.equal(offered.message, "Copilot isn't signed in for Floe. You can use your GitHub CLI login (cli-user), or sign in.");
+  assert.equal('existingLogins' in appOnly, false);
+  assert.equal(
+    appOnly.message,
+    "Copilot isn't signed in for Floe. Floe found your GitHub CLI login, but doesn't use it. Sign in to use Copilot here.",
+  );
 });
 
 test('useExistingLogin saves only the choice and readiness then uses that login', async t => {

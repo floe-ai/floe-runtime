@@ -59,6 +59,11 @@ const PROCESS_GLOBAL_AUTH_MESSAGES = Object.freeze({
   'gh-cli': "Copilot isn't signed in for Floe. Floe found your GitHub CLI login, but doesn't use it. Sign in to use Copilot here.",
 });
 
+function existingLoginsMessage(existingLogins) {
+  const offers = existingLogins.map(login => `your ${loginSourceLabel(login.source)} (${login.login})`);
+  return `Copilot isn't signed in for Floe. You can use ${offers.join(' or ')}, or sign in.`;
+}
+
 export function copilotEnvironmentForHome(environment, baseDirectory) {
   const withoutHome = Object.fromEntries(
     Object.entries(environment).filter(([key]) => key.toUpperCase() !== 'COPILOT_HOME'),
@@ -648,14 +653,15 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
   }
 
   async #publishSignedOut(message, reachability = 'reachable') {
+    const existing = await this.#existingLoginsState();
     return this.#publishState({
       phase: 'action_required',
       authentication: 'signed_out',
       access: 'unknown',
       reachability,
       action: 'sign_in',
-      message,
-      ...(await this.#existingLoginsState()),
+      message: existing.existingLogins?.length ? existingLoginsMessage(existing.existingLogins) : message,
+      ...existing,
     });
   }
 

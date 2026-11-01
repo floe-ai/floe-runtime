@@ -367,7 +367,9 @@ can also offer a login the person already has:
 While signed out, `state.existingLogins` lists each accepted login that
 Copilot recognises, as `{ source, login, host }`. Copilot doesn't report the
 account name for a token, so Floe asks GitHub's `GET /user` endpoint; a token
-GitHub doesn't confirm is not offered. Nothing is used until the person picks
+GitHub doesn't confirm is not offered. When any are listed, `state.message`
+offers them, for example "Copilot isn't signed in for Floe. You can use your
+GitHub CLI login (octocat), or sign in." Nothing is used until the person picks
 one:
 
 ```js

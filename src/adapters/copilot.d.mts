@@ -23,8 +23,8 @@ export type EngineAuthentication = 'unknown' | 'signed_out' | 'signed_in' | 'not
 export type EngineAccess = 'unknown' | 'entitled' | 'not_entitled' | 'policy_blocked';
 export type EngineReachability = 'unknown' | 'reachable' | 'unreachable';
 
-export interface EngineAccountState {
-  engine: 'copilot';
+export interface AccountState {
+  engine: string;
   phase: 'checking' | 'ready' | 'action_required' | 'unavailable';
   authentication: EngineAuthentication;
   access: EngineAccess;
@@ -36,19 +36,96 @@ export interface EngineAccountState {
   revision: number;
 }
 
-export interface SignInProgress {
-  operationId: string;
+export interface EngineAccountState extends AccountState {
   engine: 'copilot';
-  status: 'starting' | 'waiting_for_person' | 'succeeded' | 'failed' | 'cancelled';
+  /** Which login readiness used; present when signed in. */
+  loginSource?: AccountLoginSource;
+  /** Accepted existing logins found while signed out. Never includes tokens. */
+  existingLogins?: ExistingLogin[];
+  /** Why existing logins can't be offered (for example, an external Copilot server connection). */
+  existingLoginsUnavailable?: string;
+}
+
+/** 'app': Floe's own sign-in. 'github-cli': the gh CLI login. 'environment': COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN. */
+export type AccountLoginSource = 'app' | 'github-cli' | 'environment';
+
+export interface ExistingLogin {
+  source: Exclude<AccountLoginSource, 'app'>;
+  login: string;
+  host?: string;
+}
+
+export type AccountSignInProvider = 'github' | 'github-enterprise-cloud' | 'microsoft-entra';
+
+export interface SignInAccountChoice {
+  selectionId: string;
+  login: string;
+  host: string;
+  provider: string;
+}
+
+export type SignInUserAction =
+  | { kind: 'open_url'; url: string }
+  | { kind: 'input_required'; prompt: string }
+  | { kind: 'needs_interaction' }
+  | { kind: 'awaiting' }
+  | { kind: 'account_selection'; accounts: SignInAccountChoice[] }
+  | { kind: 'plaintext_consent' };
+
+export type AccountSignInStatus =
+  | 'starting'
+  | 'waiting_for_person'
+  | 'awaiting_input'
+  | 'needs_interaction'
+  | 'needs_account_selection'
+  | 'needs_plaintext_consent'
+  | 'succeeded'
+  | 'declined'
+  | 'failed'
+  | 'cancelled';
+
+export interface AccountSignInProgress {
+  operationId: string;
+  engine: string;
+  provider: string;
+  status: AccountSignInStatus;
   message: string;
+  action?: SignInUserAction;
+}
+
+export interface SignInProgress extends AccountSignInProgress {
+  engine: 'copilot';
+  provider: AccountSignInProvider;
+}
+
+export type SignInAnswer =
+  | { kind: 'continue' }
+  | { kind: 'input'; value: string }
+  | { kind: 'select_account'; selectionId: string }
+  | { kind: 'plaintext_consent'; accepted: boolean };
+
+export interface AccountSignInAdapter {
+  currentState(): AccountState;
+  check(): Promise<AccountState>;
+  signIn(options?: { provider?: AccountSignInProvider; openBrowser?: boolean }): Promise<{ id: string }>;
+  continueSignIn(id: string, answer: SignInAnswer): Promise<void>;
+  cancelSignIn(id: string): Promise<void>;
+  close(): Promise<void>;
+  on(event: 'state', listener: (state: AccountState) => void): this;
+  on(event: 'sign_in', listener: (progress: AccountSignInProgress) => void): this;
 }
 
 export interface CopilotEngineAccountAdapterOptions {
   clientFactory?: (options: Record<string, unknown>) => unknown | Promise<unknown>;
-  clientOptions?: Record<string, unknown>;
+  clientOptions: Record<string, unknown> & { baseDirectory: string };
+  /** Logins the person may choose. Defaults to ['app']. */
+  acceptedLogins?: AccountLoginSource[];
   cliPath?: string;
   environment?: Record<string, string | undefined>;
   spawnProcess?: (...args: any[]) => any;
+  openUrl?: (url: string) => void | Promise<void>;
+  /** Used for GitHub's `GET /user` to name an existing login. Defaults to global fetch. */
+  fetch?: typeof fetch;
   now?: () => string;
   operationId?: () => string;
 }
@@ -58,11 +135,21 @@ export function copilotChildEnvironment(
 ): Record<string, string | undefined>;
 
 export class CopilotEngineAccountAdapter extends EventEmitter {
-  constructor(options?: CopilotEngineAccountAdapterOptions);
+  constructor(options: CopilotEngineAccountAdapterOptions);
   currentState(): EngineAccountState;
   check(): Promise<EngineAccountState>;
-  signIn(options?: { mode?: 'browser' | 'device' }): Promise<{ id: string }>;
+  signIn(options?: {
+    provider?: AccountSignInProvider;
+    openBrowser?: boolean;
+    /** @deprecated Use provider and openBrowser. `device` retains the CLI compatibility path. */
+    mode?: 'browser' | 'device';
+  }): Promise<{ id: string }>;
+  continueSignIn(id: string, answer: SignInAnswer): Promise<void>;
   cancelSignIn(id: string): Promise<void>;
+  /** Saves the person's choice of an accepted existing login (never its token) and rechecks readiness. */
+  useExistingLogin(source: ExistingLogin['source']): Promise<EngineAccountState>;
+  /** Clears a saved existing-login choice so Floe's own sign-in is used again, and rechecks readiness. */
+  forgetExistingLogin(): Promise<EngineAccountState>;
   close(): Promise<void>;
   on(event: 'state', listener: (state: EngineAccountState) => void): this;
   on(event: 'sign_in', listener: (progress: SignInProgress) => void): this;
@@ -89,14 +176,65 @@ export type PromptBlock =
   | { type: 'file' | 'directory'; path: string; displayName?: string }
   | { type: 'selection'; filePath: string; displayName: string; selection?: { start: { line: number; character: number }; end: { line: number; character: number } }; text?: string }
   | { type: 'blob' | 'image'; data: string; mimeType: string; displayName?: string };
+/**
+ * Copilot reasoning effort level. Each model supports its own subset (see `models()` →
+ * `supportedReasoningEfforts`); `none` is offered by some GPT models.
+ */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface RunSettings {
   model?: string;
+  /**
+   * Reasoning effort for this run. Omit for the model's default (or, on a continued session, the
+   * session's current effort). A level the model does not support is refused with `copilot_effort_unavailable`.
+   */
+  effort?: ReasoningEffort;
   timeoutMs?: number;
   progressTimeoutMs?: number;
   systemMessage?: SystemMessageConfig | string;
+  /** Automatic compaction for a new or resumed session; overrides the runtime option. See README "Compaction". */
+  infiniteSessions?: InfiniteSessionsSettings;
   tools?: HostTool[];
   availableTools?: string[];
   excludedTools?: string[];
+}
+
+/** Copilot SDK automatic-compaction settings. Omitted fields use the SDK defaults. */
+export interface InfiniteSessionsSettings {
+  /** `false` turns automatic compaction off. SDK default: true. */
+  enabled?: boolean;
+  /** Context use (above 0, at most 1) at which background compaction starts. SDK default: 0.80. */
+  backgroundCompactionThreshold?: number;
+  /** Context use (above 0, at most 1) at which the session waits for compaction. SDK default: 0.95. */
+  bufferExhaustionThreshold?: number;
+}
+
+/** What `compact()` resolves with. Fields the backend does not report are null. */
+export interface CompactResult {
+  runtime: 'copilot' | 'codex';
+  sessionId: string;
+  success: boolean | null;
+  tokensRemoved: number | null;
+  messagesRemoved: number | null;
+  summary: string | null;
+  error: string | null;
+}
+
+/** Backend-neutral compaction event (README: "Compaction"). */
+export interface CompactionEvent {
+  runtime: 'copilot' | 'codex';
+  sessionId: string;
+  phase: 'started' | 'completed' | 'failed';
+  /** Copilot SDK trigger: manual, threshold, context_limit_retry, memory_pressure or model_switch. */
+  trigger: string | null;
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+  tokensRemoved: number | null;
+  messagesRemoved: number | null;
+  focus: string | null;
+  summary: string | null;
+  error: string | null;
+  raw: unknown;
 }
 
 export interface HostTool {
@@ -138,6 +276,8 @@ export interface RunContinuation {
 
 export interface RunStartMeta {
   model: string | null;
+  /** The effort the session is set to, or null when Copilot's model default applies. */
+  effort: string | null;
   runtimeInstance: unknown;
   session: { action: 'fresh' | 'reused' | 'refreshed'; reason: string };
 }
@@ -151,6 +291,8 @@ export interface RunResult {
   sessionId: string;
   turnId: string;
   stopReason: string;
+  /** The effort Copilot reported using, else the effort the session was set to, else null. */
+  effort: string | null;
   items: unknown[];
   usage: unknown;
   elapsedMs: number;
@@ -319,6 +461,7 @@ export type CopilotRuntimeOptions = {
   tools?: HostTool[];
   availableTools?: string[];
   excludedTools?: string[];
+  infiniteSessions?: InfiniteSessionsSettings;
   permissionPolicy?: (request: CopilotPermissionRequest) => PermissionPolicyDecision | Promise<PermissionPolicyDecision>;
   beforeToolUse?: CopilotBeforeToolUse;
   defaultPermissionDecision?: 'allow_once';
@@ -332,7 +475,7 @@ export interface CopilotCapabilities extends Record<string, boolean> {
   setMode: false;
   setPermissions: false;
   setGoal: false;
-  compact: false;
+  compact: true;
   usage: false;
   steer: false;
   fork: false;
@@ -394,17 +537,28 @@ export class CopilotRuntime extends EventEmitter {
     settings?: RunSettings,
     continuation?: RunContinuation,
   ): Promise<RunResult>;
-  setModel(sessionId: string, modelId: string): Promise<unknown>;
+  /**
+   * Switches a live session's model and optionally its effort. Without `options.effort` the current
+   * effort is kept; a model that cannot use it is refused (`copilot_effort_unavailable`). A switch
+   * Copilot rejects (`copilot_model_switch_rejected`) leaves the session unchanged.
+   */
+  setModel(sessionId: string, modelId: string, options?: { effort?: ReasoningEffort }): Promise<unknown>;
   interrupt(sessionId: string): Promise<void>;
   quiesce(sessionId: string): Promise<void>;
   retire(sessionId: string): Promise<{ status: string; reason?: string }>;
-  resume(sessionId: string, cwd: string): Promise<string>;
+  resume(sessionId: string, cwd: string, settings?: RunSettings): Promise<string>;
+  /**
+   * Compacts the session's history now. A session not live in this process is resumed first, in
+   * `options.cwd` or the working directory Copilot recorded. Refused with `turn_busy` during a turn.
+   */
+  compact(sessionId: string, focus?: string, options?: { cwd?: string; settings?: RunSettings }): Promise<CompactResult>;
   availableCommands(sessionId: string): never;
   close(): Promise<void>;
 
   on(event: 'activity', listener: (event: ActivityEvent) => void): this;
   on(event: 'turn', listener: (event: TurnEvent) => void): this;
   on(event: 'usage', listener: (event: UsageEvent) => void): this;
+  on(event: 'compaction', listener: (event: CompactionEvent) => void): this;
   on(event: 'diagnostic', listener: (text: string) => void): this;
   on(event: 'stream' | 'request' | 'ready' | 'lost' | 'notification', listener: (...args: unknown[]) => void): this;
   on(event: string | symbol, listener: (...args: any[]) => void): this;

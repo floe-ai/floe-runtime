@@ -222,6 +222,26 @@ sessions are refused without fallback.
 Model listing and selection use SDK APIs; authentication is owned by the SDK
 runtime.
 
+#### Reasoning effort
+
+`settings.effort` sets the reasoning effort (`none`, `low`, `medium`, `high`,
+`xhigh`, `max`), the same setting name as the Codex adapter. Each model
+supports its own levels, listed by `models()` as `supportedReasoningEfforts`.
+- **Omitted:** nothing is sent and Copilot uses the model's default.
+- **Unsupported level:** refused before any session is touched with
+  `copilot_effort_unavailable`, naming the levels the model supports. Models
+  whose catalogue entry says nothing about effort (for example `auto`) are left
+  to Copilot.
+- **Reported:** `result.effort` is the effort Copilot reported using (from its
+  usage events), else the effort the session was set to, else `null`.
+  `onStart` meta carries the effort the session is set to.
+- **Mid-session:** `setModel(id, modelId, { effort })` changes model and effort
+  together. A continued `run()` with a different `settings.model` or
+  `settings.effort` switches the live session the same way; with no effort it
+  keeps the current one. A new model that cannot use the current effort is
+  refused rather than silently reset. A switch Copilot rejects raises
+  `copilot_model_switch_rejected` and leaves the session as it was.
+
 The pinned Windows runtime exposes only work tools, in one of two catalogs.
 The default catalog has PowerShell and its read/stop/list companions, `view`,
 `grep`, `glob`, `create`, `edit`, and `web_fetch`. The codex catalog has the
@@ -289,17 +309,100 @@ embedded context, fail with `unsupported_prompt_block` before sending.
 
 `CopilotEngineAccountAdapter` performs a pre-turn account check through a
 short-lived SDK client and publishes normalized `state` events for
-reachability, authentication, and entitlement. Its `signIn()` and
-`cancelSignIn()` methods drive an explicitly supplied, packaged official
-Copilot CLI through `copilot login`; OAuth credentials remain in GitHub's
-credential store. SDK and login children never receive
+reachability, authentication, and entitlement. Configure the same
+`clientOptions.baseDirectory` on this adapter and `CopilotRuntime`; account
+checks, sign-in, and conversation sessions then use the same Floe-owned
+Copilot home.
+
+The default `signIn()` path uses the SDK's session-scoped login RPC and does not
+require `cliPath`. It emits `sign_in` progress events rather than requiring
+apps to poll. An app can open the returned URL itself and continue the flow,
+or disable Floe's default browser opening with `openBrowser: false`:
+
+```js
+import { CopilotEngineAccountAdapter } from 'floe-runtime/adapters/copilot';
+
+const accounts = new CopilotEngineAccountAdapter({
+  clientOptions: { baseDirectory: copilotHome },
+});
+accounts.on('state', state => updateAccountState(state));
+accounts.on('sign_in', progress => updateSignIn(progress));
+
+const { id } = await accounts.signIn({ provider: 'github' });
+// When progress.action asks for input or account selection:
+await accounts.continueSignIn(id, { kind: 'input', value: userInput });
+// Or: { kind: 'select_account', selectionId }
+// For open_url, needs_interaction, and awaiting actions: { kind: 'continue' }
+await accounts.cancelSignIn(id); // or await accounts.close()
+```
+
+The app-facing provider names are `github`, `github-enterprise-cloud`, and
+`microsoft-entra`; provider-specific SDK names stay inside the adapter. The
+adapter explicitly reports input prompts, account selection, plaintext
+consent, and provider-driven interaction as progress actions. The SDK
+currently exposes plaintext-consent state without documenting an answer
+format, so attempting to answer it fails with
+`copilot_login_action_unsupported`; apps should explain the limitation and
+allow cancellation rather than guessing a consent value.
+
+**SDK risk:** the login RPC is experimental and undocumented in Copilot SDK
+1.0.19. Provider mappings follow its generated type enums, but GitHub
+Enterprise Cloud, Entra, and headless provider flows have not been tested
+end-to-end. SDK sign-in has no device-code step.
+
+For compatibility, `signIn({ mode: 'device' })` retains the existing
+official-CLI device-code path and requires an explicitly supplied `cliPath`.
+It sets the CLI's `COPILOT_HOME` to `clientOptions.baseDirectory`, so its
+account storage matches SDK checks and sessions. This local CLI compatibility
+path is not a remote device-code API. SDK and CLI children never receive
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or
 `COPILOT_DISABLE_KEYTAR` from the parent process.
-On Windows the login child is hidden instead of opening a second console.
-Its output remains inherited for terminal users, but Floe does not parse that
-vendor-owned text as a protocol. The pushed waiting state explains that a
-browser should open and directs the person to the official CLI in a terminal
-if it does not.
+
+### Existing logins
+
+By default (`acceptedLogins: ['app']`) only Floe's own sign-in counts. An app
+can also offer a login the person already has:
+
+- `'github-cli'`: the GitHub CLI login (Floe runs `gh auth token`).
+- `'environment'`: the first of `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or
+  `GITHUB_TOKEN` in the adapter's environment.
+
+While signed out, `state.existingLogins` lists each accepted login that
+Copilot recognises, as `{ source, login, host }`. Copilot doesn't report the
+account name for a token, so Floe asks GitHub's `GET /user` endpoint; a token
+GitHub doesn't confirm is not offered. When any are listed, `state.message`
+offers them, for example "Copilot isn't signed in for Floe. You can use your
+GitHub CLI login (octocat), or sign in." Nothing is used until the person picks
+one:
+
+```js
+const accounts = new CopilotEngineAccountAdapter({
+  clientOptions: { baseDirectory: copilotHome },
+  acceptedLogins: ['app', 'github-cli', 'environment'],
+});
+accounts.on('state', state => {
+  if (state.authentication !== 'signed_out') return showAccount(state.account, state.loginSource);
+  showButtons([
+    ...(state.existingLogins ?? []).map(login => ({
+      label: `Use ${login.login} (${login.source})`,
+      onClick: () => accounts.useExistingLogin(login.source),
+    })),
+    { label: 'Sign in', onClick: () => accounts.signIn() },
+  ]);
+});
+await accounts.check();
+// Later: await accounts.forgetExistingLogin();
+```
+
+`useExistingLogin(source)` saves only the choice (`{ "source": ... }` in
+`floe-login.json` inside `clientOptions.baseDirectory`), never the token. Every
+SDK client the account adapter and `CopilotRuntime` create then gets a freshly
+resolved token from that source, and readiness reports `loginSource`. If the
+chosen source has no token later, readiness reports `signed_out` and does not
+fall back to another login. `forgetExistingLogin()` clears the choice;
+completing `signIn()` also clears it. Existing logins aren't available with
+`RuntimeConnection.forUri`, because the SDK leaves auth to the external server;
+`state.existingLoginsUnavailable` explains why.
 
 ## Parity surface
 
@@ -311,12 +414,12 @@ equivalent capability, the method throws a `RuntimeFault` with code
 
 | Method | Codex | Copilot | Notes |
 | --- | --- | --- | --- |
-| `setModel(id, modelId)` | ✅ applied on the next `turn/start` | ✅ SDK session model selection | Copilot rejects model IDs absent from the SDK's advertised catalogue; it never silently falls back to the default. |
+| `setModel(id, modelId, { effort }?)` | ✅ model and effort applied on the next `turn/start` | ✅ SDK session model and effort switch | Copilot rejects model IDs absent from the SDK's advertised catalogue and efforts the model does not support; it never silently falls back to the default. |
 | `releaseSession(id)` / `retire(id)` | ✅ `thread/unsubscribe` | ✅ SDK session disconnect | |
 | `setMode(id, mode)` | ❌ unsupported | ❌ unsupported | Codex has no session-mode concept |
 | `setPermissions(id, level)` | ✅ `approvalPolicy`/`sandbox`/`sandboxPolicy` override, applied next `turn/start` | ❌ unsupported; configure `permissionPolicy` at construction | |
 | `setGoal(id, objective, opts)` | ✅ `thread/goal/set`\|`get`\|`clear` (`opts.maxCredits` unsupported) | ❌ unsupported | |
-| `compact(id, focus)` | ✅ `thread/compact/start` | ❌ unsupported | |
+| `compact(id, focus)` | ✅ `thread/compact/start`; no focus text, returns before compaction ends | ✅ SDK `history.compact` (experimental) | See "Compaction". |
 | `usage(id)` | ✅ `account/usage/read` + `account/rateLimits/read` | ❌ unsupported | |
 | `steer(id, text)` | ✅ `turn/steer` (requires an active turn) | ❌ unsupported | |
 | `fork(id)` | ✅ `thread/fork` | ❌ unsupported | |
@@ -347,6 +450,72 @@ runtime.on('stream', event => { /* ... */ });
 
 Fires live incremental text/reasoning/command-output as the agent produces
 it, in addition to the final result `run()` resolves with.
+
+## Compaction
+
+Compaction summarizes a conversation's history to free context window.
+
+**Manual: `compact(sessionId, focus?, options?)`**
+- `focus` steers what the summary keeps, for example
+  `'keep design decisions and rejected options'`.
+- Resolves with:
+  `{ runtime, sessionId, success, tokensRemoved, messagesRemoved, summary, error }`.
+  Fields the backend does not report are `null`.
+- Refused with `turn_busy` while the session has an active turn, and with
+  `compaction_busy` while it is already compacting. `run()` on a compacting
+  session is refused with `compaction_busy`.
+
+**Copilot**
+- Uses the SDK's `session.rpc.history.compact`, which the SDK marks
+  experimental.
+- A session that is not live in this process (for example after a restart)
+  is resumed first, in `options.cwd` or else the working directory Copilot
+  recorded for it. `options.settings` are the resume settings.
+- A failed compaction (for example `Nothing to compact.`) resolves with
+  `success: false` and the SDK's `error`. Other SDK failures reject with
+  `copilot_compaction_failed`.
+- `tokensRemoved` can be negative: on a short history the summary can be
+  longer than what it replaced.
+- Compaction is its own model call. Its cost is in the event's `raw` data
+  (`compactionTokensUsed`), not in the turn's usage.
+
+**Copilot automatic compaction: `infiniteSessions`**
+- Set it as a runtime option or per run in `settings.infiniteSessions`; the
+  run setting wins. Omitted, the SDK default applies (on, starting at 80% of
+  the context window and blocking at 95%).
+- Fields: `enabled` (`false` turns automatic compaction off),
+  `backgroundCompactionThreshold`, `bufferExhaustionThreshold` (each above 0,
+  at most 1).
+- Copilot fixes it when a session is created or resumed. A continued `run()`
+  with a different value is refused with `copilot_compaction_settings_locked`;
+  retire the session and resume it with the new setting.
+- Confirmed live: with `enabled: false` no compaction runs as the context fills,
+  and the session still resumes after a restart.
+
+**Codex**
+- `thread/compact/start` takes no focus text, so a `focus` is refused with
+  `compact_focus_unsupported`.
+- It answers before compaction finishes, so `success` is `null`. Watch the
+  `compaction` event for the end.
+- Automatic compaction is Codex's own; this runtime has no setting for it.
+
+**The `compaction` event**
+
+```js
+runtime.on('compaction', event => { /* ... */ });
+// { runtime, sessionId, phase: 'started'|'completed'|'failed', trigger,
+//   tokensBefore, tokensAfter, tokensRemoved, messagesRemoved, focus,
+//   summary, error, raw }
+```
+
+- Fires for manual and automatic compactions, including ones between runs,
+  while the session is live in this process.
+- Copilot `trigger` values are the SDK's: `manual`, `threshold` (automatic,
+  in the background), `context_limit_retry`, `memory_pressure`,
+  `model_switch`.
+- Codex reports only that a compaction started and completed (a
+  `contextCompaction` item), so `trigger`, token counts, `focus` and `summary`
+  are `null`, and it never reports `failed`.
 
 ## No polling, anywhere
 
@@ -407,9 +576,8 @@ conversation by itself.**
   session ids, or against `listSessions()`'s full backend list.
 - **Context window growth**: conversations cannot grow forever. The answer is
   `compact(sessionId, focus)` (P6) - it summarizes history to reclaim context
-  budget - not dropping the conversation. Call it proactively (e.g. from a
-  `usage()`/`thread/tokenUsage/updated`-driven heuristic) before a
-  conversation's context window is actually exhausted.
+  budget - not dropping the conversation. Copilot also compacts automatically
+  unless `infiniteSessions.enabled` is `false`. See "Compaction".
 - **Resuming a Codex thread clears its goal server-side.** Confirmed live:
   `thread/resume` is immediately followed by a `thread/goal/cleared`
   notification. `resume(threadId, { goal })` re-applies the last known
@@ -472,8 +640,8 @@ references - safe to `JSON.stringify`, log, or store):
 ```
 
 - `seq` - a monotonic integer, per `conversationId` (a threadId/sessionId).
-- `type` - `'activity'`, `'stream'`, `'turn'`, `'replay'`, `'replayComplete'`,
-  or `'gap'`.
+- `type` - `'activity'`, `'stream'`, `'turn'`, `'compaction'`, `'replay'`,
+  `'replayComplete'`, or `'gap'`.
 - `replay` - `true` while the event is part of replayed history, `false` once
   activity is live. A `'replayComplete'` event marks the transition.
 - `data` - the same shape the matching named event (`'activity'`, `'stream'`,
@@ -657,6 +825,8 @@ retirement events - never a timer (see "No polling, anywhere").
   `extractStructuredOutput()`, `promptInstructionFor()`.
 - `src/activity.mjs` - the normalized activity event shape and Codex
   `kind` mapping (`codexActivityKind()`).
+- `src/compaction.mjs` - the normalized `compaction` event and `compact()`
+  result shapes, and `infiniteSessions` validation.
 - `src/events.mjs` - `EventLog` (the bounded, sequenced, per-conversation
   replay buffer) and `watchEvents()` (the async-iterable live feed backing
   `Runtime#events()`).

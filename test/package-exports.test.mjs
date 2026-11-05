@@ -33,7 +33,7 @@ test('Copilot package entry point exports its runtime, account adapter, and help
   assert.equal(typeof resolveCopilotToolSelection, 'function');
 });
 
-test('Copilot SDK declarations and README match the unsupported command contract', async () => {
+test('Copilot SDK declarations and README match its app-facing contract', async () => {
   const [declarations, readme] = await Promise.all([
     readFile(new URL('../src/adapters/copilot.d.mts', import.meta.url), 'utf8'),
     readFile(new URL('../README.md', import.meta.url), 'utf8'),
@@ -42,5 +42,9 @@ test('Copilot SDK declarations and README match the unsupported command contract
   assert.match(declarations, /fleetMode: false;/);
   assert.match(declarations, /scheduleRecurring: false;/);
   assert.match(declarations, /scheduleOnce: false;/);
+  assert.match(declarations, /export interface AccountSignInAdapter/);
+  assert.match(declarations, /continueSignIn\(id: string, answer: SignInAnswer\): Promise<void>;/);
+  assert.match(declarations, /kind: 'plaintext_consent'/);
   assert.match(readme, /\| `availableCommands\(id\)` \| ❌ unsupported \| ❌ unsupported \|/);
+  assert.match(readme, /login RPC is experimental and undocumented/);
 });

@@ -12,6 +12,7 @@ import { RuntimeFault, check, id } from '../errors.mjs';
 import { SessionRegistry, sessionKey } from '../session-reuse.mjs';
 import { extractStructuredOutput } from '../schema.mjs';
 import { unsupported } from '../capabilities.mjs';
+import { compactResult, copilotCompactionEvent, normalizeInfiniteSessions } from '../compaction.mjs';
 import { CopilotClient } from '@github/copilot-sdk';
 import {
   COPILOT_BUILTIN_TOOL_MANIFEST,
@@ -20,7 +21,8 @@ import {
   prepareCopilotToolSession,
   resolveCopilotToolSelection,
 } from './copilot-tools.mjs';
-import { copilotChildEnvironment } from './copilot-account.mjs';
+import { copilotSdkClientOptions } from './copilot-account.mjs';
+import { CHOSEN_LOGIN_AUTH_TYPES, loginSourceLabel, resolveSavedLogin, tokenIdentity } from './copilot-login-sources.mjs';
 import { copilotSystemMessage, floeBaseSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
@@ -41,6 +43,7 @@ const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;
 const DEFAULT_PROGRESS_TIMEOUT_MS = 120000;
 const PROCESS_EXECUTION_TOOLS = new Set(['bash', 'powershell']);
 const TOKEN_USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'];
+const APP_LOGIN_AUTH_TYPES = new Set(['user']);
 
 function sdkError(code, message, status = 502, cause) {
   const error = new RuntimeFault(code, message, status);
@@ -69,14 +72,9 @@ function normalizedHost(host) {
   return typeof host === 'string' ? host.trim().replace(/\/+$/, '').toLowerCase() : '';
 }
 
-function isolatedClientOptions(clientOptions) {
-  const { gitHubToken: _ignoredToken, env: optionEnvironment, ...options } = clientOptions;
-  return {
-    ...options,
-    mode: 'copilot-cli',
-    useLoggedInUser: true,
-    env: copilotChildEnvironment({ ...process.env, ...optionEnvironment }),
-  };
+/** The model and reasoning effort a session was opened or last switched with (null = Copilot default). */
+function modelState(model, settings = {}) {
+  return { currentModelId: model || null, currentEffort: settings.effort || null };
 }
 
 function layeredSystemMessage(applicationLayer, actorLayer) {
@@ -126,6 +124,9 @@ function promptOptions(input) {
 }
 
 export class CopilotRuntime extends Runtime {
+  #chosenToken;
+  #chosenLogin;
+
   constructor({
     model,
     timeoutMs = 45 * 60 * 1000,
@@ -139,6 +140,7 @@ export class CopilotRuntime extends Runtime {
     tools = [],
     availableTools,
     excludedTools,
+    infiniteSessions,
     permissionPolicy,
     beforeToolUse,
     defaultPermissionDecision = 'allow_once',
@@ -170,18 +172,21 @@ export class CopilotRuntime extends Runtime {
     this.progressTimeoutMs = progressTimeoutMs;
     this.client = client;
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
-    this.clientOptions = isolatedClientOptions(clientOptions);
+    this.clientOptions = clientOptions;
+    this.loginSource = 'app';
     this.systemMessage = systemMessage;
     layeredSystemMessage(systemMessage); // rejects a malformed application layer at construction
     this.tools = tools.map(normalizeTool);
     this.availableTools = availableTools;
     this.excludedTools = excludedTools;
+    this.infiniteSessions = normalizeInfiniteSessions(infiniteSessions);
     this.toolPolicyTimeoutMs = toolPolicyTimeoutMs;
     this.sessions = new SessionRegistry();
     this.sessionObjects = new Map();
     this.sessionContexts = new Map();
     this.turns = new Map();
     this.commands = new Map();
+    this.compactions = new Map();
     this.starting = null;
     this.modelCatalogue = null;
   }
@@ -189,7 +194,7 @@ export class CopilotRuntime extends Runtime {
   capabilities() {
     return {
       setModel: true, releaseSession: true, setMode: false, setPermissions: false, setGoal: false,
-      compact: false, usage: false, steer: false, fork: false, listSessions: true, resume: true,
+      compact: true, usage: false, steer: false, fork: false, listSessions: true, resume: true,
       streaming: true, richPrompt: true, availableCommands: false, fleetMode: false,
       scheduleRecurring: false, scheduleOnce: false, directTools: true, systemMessage: true, systemMessageSections: true,
     };
@@ -200,17 +205,41 @@ export class CopilotRuntime extends Runtime {
     if (this.starting) return this.starting;
     this.starting = (async () => {
       try {
-        if (!this.client) this.client = await this.clientFactory(this.clientOptions);
+        if (!this.client) this.client = await this.clientFactory(await this.#sdkOptions());
         await this.client.start();
         this.ready = true;
         this.info = { backend: 'copilot-sdk', sdkVersion: '1.0.19' };
         this.emit('ready', this.info);
         return this.info;
       } catch (error) {
+        if (error?.code === 'copilot_login_unavailable') throw error;
         throw sdkError('copilot_unavailable', `Copilot SDK could not start: ${error.message}`, 503, error);
       }
     })();
     try { return await this.starting; } finally { this.starting = null; }
+  }
+
+  /** Each new client gets a freshly resolved token when the person chose an existing login; there is no fallback. */
+  async #sdkOptions() {
+    const login = await resolveSavedLogin({ clientOptions: this.clientOptions });
+    if (login.source !== 'app' && !login.gitHubToken) {
+      throw sdkError(
+        'copilot_login_unavailable',
+        login.unavailable ?? `Floe is set to use your ${loginSourceLabel(login.source)}, but it isn't available now. Check Copilot readiness.`,
+        401,
+      );
+    }
+    this.loginSource = login.source;
+    this.#chosenToken = login.gitHubToken;
+    this.#chosenLogin = undefined;
+    return copilotSdkClientOptions(this.clientOptions, process.env, login.gitHubToken);
+  }
+
+  /** The session's login; for a chosen token the SDK may omit it, so GitHub confirms the token owner. */
+  async #sessionLogin(auth) {
+    if (this.loginSource === 'app' || (typeof auth.login === 'string' && auth.login)) return auth.login;
+    this.#chosenLogin ??= (await tokenIdentity(auth, this.#chosenToken))?.login;
+    return this.#chosenLogin;
   }
 
   async models() {
@@ -262,6 +291,32 @@ export class CopilotRuntime extends Runtime {
     );
   }
 
+  /**
+   * Refuses a model/effort pair Copilot's own catalogue says it cannot run, before any session is
+   * touched. Copilot would otherwise accept the session and fail its first message with no error code.
+   * Models whose catalogue entry declares nothing about effort (for example `auto`) are left to Copilot.
+   */
+  async #assertModelChoice(model, effort, origin = 'requested') {
+    await this.#assertKnownModel(model);
+    if (effort === undefined || effort === null || effort === '') return;
+    if (typeof effort !== 'string') {
+      throw sdkError('copilot_effort_unavailable', `Copilot reasoning effort '${String(effort)}' is not a level name.`, 400);
+    }
+    if (!model) return;
+    const { models } = await this.#models();
+    const entry = models.find(candidate => candidate.modelId === model);
+    const levels = Array.isArray(entry?.supportedReasoningEfforts) ? entry.supportedReasoningEfforts : null;
+    const unsupported = entry?.capabilities?.supports?.reasoningEffort === false || (levels && !levels.includes(effort));
+    if (!unsupported) return;
+    const allowed = levels?.length ? `Supported levels: ${levels.join(', ')}.` : 'This model does not support reasoning effort.';
+    const hint = origin === 'current' ? ' Pass an effort the new model supports.' : '';
+    throw sdkError(
+      'copilot_effort_unavailable',
+      `Copilot model '${model}' cannot use the ${origin} reasoning effort '${effort}'. ${allowed}${hint}`,
+      400,
+    );
+  }
+
   #toolHook(selection) {
     return createCopilotToolHook({
       selection,
@@ -286,6 +341,24 @@ export class CopilotRuntime extends Runtime {
     };
   }
 
+  /** Per-run `settings.infiniteSessions` wins over the runtime default; undefined leaves the SDK default. */
+  #infiniteSessions(settings = {}) {
+    return normalizeInfiniteSessions(settings.infiniteSessions, 'settings.infiniteSessions') ?? this.infiniteSessions;
+  }
+
+  /** Records a live session and reports its compactions for its whole life, not only during run(). */
+  #track(sessionId, session) {
+    this.sessionObjects.set(sessionId, session);
+    // disconnect() clears SDK handlers, so this listener ends with the session.
+    session.on(event => {
+      const compaction = copilotCompactionEvent(sessionId, event);
+      if (!compaction) return;
+      const pending = this.compactions.get(sessionId);
+      if (pending && compaction.phase === 'failed') pending.failure = compaction.error || 'Copilot compaction failed.';
+      this.publish(sessionId, 'compaction', compaction);
+    });
+  }
+
   #sessionConfig(cwd, model, settings = {}, sessionId) {
     const tools = [...this.tools, ...(settings.tools || [])].map(normalizeTool);
     const selection = resolveCopilotToolSelection({
@@ -293,9 +366,12 @@ export class CopilotRuntime extends Runtime {
       availableTools: settings.availableTools ?? this.availableTools,
       excludedTools: settings.excludedTools ?? this.excludedTools,
     });
+    const infiniteSessions = this.#infiniteSessions(settings);
     const config = {
       ...(sessionId ? { sessionId } : {}),
+      ...(infiniteSessions ? { infiniteSessions } : {}),
       model: model || undefined,
+      ...(settings.effort ? { reasoningEffort: settings.effort } : {}),
       workingDirectory: cwd,
       streaming: true,
       tools,
@@ -342,11 +418,14 @@ export class CopilotRuntime extends Runtime {
     if (!auth?.isAuthenticated) {
       throw sdkError('copilot_account_mismatch', `Copilot session is not authenticated as the readiness account '${this.expectedAccount.label}'.`, 409);
     }
-    if (auth.authType !== 'user') {
-      throw sdkError('copilot_account_mismatch', `Copilot session selected '${auth.authType || 'unknown'}' authentication instead of the readiness OAuth account '${this.expectedAccount.label}'.`, 409);
+    const acceptedAuthTypes = this.loginSource === 'app' ? APP_LOGIN_AUTH_TYPES : CHOSEN_LOGIN_AUTH_TYPES;
+    if (!acceptedAuthTypes.has(auth.authType)) {
+      const expected = this.loginSource === 'app' ? 'readiness OAuth account' : `readiness ${loginSourceLabel(this.loginSource)}`;
+      throw sdkError('copilot_account_mismatch', `Copilot session selected '${auth.authType || 'unknown'}' authentication instead of the ${expected} '${this.expectedAccount.label}'.`, 409);
     }
-    if (typeof auth.login !== 'string' || auth.login.toLowerCase() !== this.expectedAccount.label.toLowerCase()) {
-      throw sdkError('copilot_account_mismatch', `Copilot session authenticated as '${auth.login || 'unknown'}' instead of readiness account '${this.expectedAccount.label}'.`, 409);
+    const login = await this.#sessionLogin(auth);
+    if (typeof login !== 'string' || login.toLowerCase() !== this.expectedAccount.label.toLowerCase()) {
+      throw sdkError('copilot_account_mismatch', `Copilot session authenticated as '${login || 'unknown'}' instead of readiness account '${this.expectedAccount.label}'.`, 409);
     }
     if (this.expectedAccount.host && normalizedHost(auth.host) !== normalizedHost(this.expectedAccount.host)) {
       throw sdkError('copilot_account_mismatch', `Copilot session authenticated against '${auth.host || 'unknown'}' instead of readiness host '${this.expectedAccount.host}'.`, 409);
@@ -370,10 +449,31 @@ export class CopilotRuntime extends Runtime {
   async #getSession(cwd, model, settings, continuation) {
     if (continuation.sessionId && this.sessionObjects.has(continuation.sessionId)) {
       const session = this.sessionObjects.get(continuation.sessionId);
-      const { selection } = this.#sessionConfig(cwd, model, settings, continuation.sessionId);
-      await this.#prepareSession(session, cwd, selection);
-      this.sessionContexts.set(continuation.sessionId, { cwd, settings });
-      this.sessions.get(continuation.sessionId).stopped = true;
+      check(!this.turns.has(continuation.sessionId), 'turn_busy', 'The session already has an active turn.', 409);
+      const record = this.sessions.get(continuation.sessionId);
+      const infiniteSessions = this.#infiniteSessions(this.sessionContexts.get(continuation.sessionId)?.settings);
+      if (Object.hasOwn(settings, 'infiniteSessions')) {
+        check(
+          JSON.stringify(this.#infiniteSessions(settings)) === JSON.stringify(infiniteSessions),
+          'copilot_compaction_settings_locked',
+          'Copilot fixes infiniteSessions when a session is created or resumed. Retire the session and resume it with the new setting.',
+          409,
+        );
+      }
+      // The live session keeps the setting it was opened with, whatever later runs omit.
+      settings = { ...settings, infiniteSessions };
+      // Only an explicit settings.model counts; the runtime default must not undo an earlier setModel().
+      const modelChanged = Object.hasOwn(settings, 'model') && !!model && model !== record.currentModelId;
+      const effortChanged = !!settings.effort && settings.effort !== record.currentEffort;
+      if (modelChanged || effortChanged) {
+        const target = modelChanged ? model : record.currentModelId;
+        await this.#switchModel(continuation.sessionId, target, settings.effort, { cwd, settings });
+      } else {
+        const { selection } = this.#sessionConfig(cwd, model, settings, continuation.sessionId);
+        await this.#prepareSession(session, cwd, selection);
+        this.sessionContexts.set(continuation.sessionId, { cwd, settings });
+      }
+      record.stopped = true;
       return { session, sessionId: continuation.sessionId, reused: true, reason: 'Continuing the same session.' };
     }
     if (continuation.sessionId && continuation.resumable !== false) {
@@ -381,9 +481,9 @@ export class CopilotRuntime extends Runtime {
         const { config, selection } = this.#sessionConfig(cwd, model, settings, continuation.sessionId);
         const session = await this.client.resumeSession(continuation.sessionId, config);
         await this.#prepareSession(session, cwd, selection);
-        this.sessionObjects.set(session.sessionId, session);
+        this.#track(session.sessionId, session);
         this.sessionContexts.set(session.sessionId, { cwd, settings });
-        this.sessions.set(session.sessionId, { key: null, result: { sessionId: session.sessionId } });
+        this.sessions.set(session.sessionId, { key: null, result: { sessionId: session.sessionId }, ...modelState(model, settings) });
         return { session, sessionId: session.sessionId, reused: true, reason: 'Resumed persisted session.' };
       } catch (error) {
         if (
@@ -398,7 +498,7 @@ export class CopilotRuntime extends Runtime {
     const { config, selection } = this.#sessionConfig(cwd, model, settings);
     const session = await this.client.createSession(config);
     await this.#prepareSession(session, cwd, selection);
-    this.sessionObjects.set(session.sessionId, session);
+    this.#track(session.sessionId, session);
     this.sessionContexts.set(session.sessionId, { cwd, settings });
     return { session, sessionId: session.sessionId, reused: false, reason: continuation.sessionId ? 'The prior session was unavailable.' : 'A fresh session was requested.' };
   }
@@ -549,7 +649,9 @@ export class CopilotRuntime extends Runtime {
         const report = task.schema ? extractStructuredOutput(text, task.schema, { role: task.role }) : text;
         const stopReason = finish || 'end_turn';
         this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'completed', stopReason });
-        task.resolve({ report, text, sessionId, turnId: task.turnId, stopReason, items: task.items, usage: task.usage, elapsedMs: Date.now() - task.started });
+        // effort = what Copilot reported using for the last model call, else the effort the session was set to.
+        const effort = task.usage?.reasoningEffort || task.effort || null;
+        task.resolve({ report, text, sessionId, turnId: task.turnId, stopReason, effort, items: task.items, usage: task.usage, elapsedMs: Date.now() - task.started });
       } catch (caught) {
         this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'failed', stopReason: finish || 'end_turn' });
         task.reject(caught);
@@ -567,19 +669,22 @@ export class CopilotRuntime extends Runtime {
     if (!Number.isFinite(progressTimeoutMs) || progressTimeoutMs <= 0) {
       throw new TypeError('Copilot progressTimeoutMs must be a positive finite number.');
     }
-    await this.#assertKnownModel(model);
+    check(!this.compactions.has(continuation.sessionId), 'compaction_busy', 'The session is being compacted.', 409);
+    // A live continuation is checked against the session's own model inside #switchModel.
+    if (!(continuation.sessionId && this.sessionObjects.has(continuation.sessionId))) await this.#assertModelChoice(model, settings.effort);
     const sendOptions = promptOptions(input);
     const key = sessionKey({ role, cwd, model, settings, permissions: null, scope: continuation.scope });
     const destination = await this.#getSession(cwd, model, settings, continuation);
     const { session, sessionId, reused, reason } = destination;
-    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { key, result: { sessionId }, currentModelId: model || null });
+    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { key, result: { sessionId }, ...modelState(model, settings) });
     else this.sessions.get(sessionId).key = key;
     check(!this.turns.has(sessionId), 'turn_busy', 'The session already has an active turn.', 409);
+    const effort = this.sessions.get(sessionId).currentEffort;
     let resolveResult; let rejectResult; let settle;
     const completion = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
     const settled = new Promise(resolve => { settle = resolve; });
     const task = {
-      role, schema: input.schema, started: Date.now(), turnId: id('turn'), items: [], text: '',
+      role, schema: input.schema, started: Date.now(), turnId: id('turn'), items: [], text: '', effort,
       finalMessage: null, finishReason: null, usage: null, modelCalls: [], toolCallIds: new Set(), activities: new Map(), resolve: resolveResult,
       reject: rejectResult, settle, settled, idle: false, abortRequested: false, unverifiedProcessTools: new Set(), finished: false,
       timer: null, progressTimer: null, progressTimeoutMs,
@@ -604,7 +709,7 @@ export class CopilotRuntime extends Runtime {
     this.turns.set(sessionId, task);
     this.publish(sessionId, 'turn', { runtime: 'copilot', sessionId, turnId: task.turnId, phase: 'started' });
     try {
-      await onStart(sessionId, { model: model || null, runtimeInstance: this, session: { action: reused ? 'reused' : 'fresh', reason } });
+      await onStart(sessionId, { model: model || null, effort, runtimeInstance: this, session: { action: reused ? 'reused' : 'fresh', reason } });
       this.#armProgressTimer(sessionId, task, 'sending');
       await Promise.race([session.send(sendOptions), completion]);
       if (!task.finished) this.#armProgressTimer(sessionId, task, 'queued');
@@ -631,14 +736,32 @@ export class CopilotRuntime extends Runtime {
     return completion;
   }
 
-  async setModel(sessionId, modelId) {
-    const session = this.sessionObjects.get(sessionId);
-    check(session, 'session_unavailable', `Copilot session '${sessionId}' is unavailable.`, 404);
+  /**
+   * Changes a live session's model and, optionally, its reasoning effort. `options.effort` omitted keeps
+   * the session's current effort; a new model that cannot use it is refused rather than silently reset.
+   */
+  async setModel(sessionId, modelId, options = {}) {
+    check(this.sessionObjects.get(sessionId), 'session_unavailable', `Copilot session '${sessionId}' is unavailable.`, 404);
     const context = this.sessionContexts.get(sessionId);
     check(context, 'session_unavailable', `Copilot session '${sessionId}' has no tool-catalog context.`, 404);
-    await this.#assertKnownModel(modelId);
+    await this.#switchModel(sessionId, modelId, options.effort, context);
+  }
+
+  async #switchModel(sessionId, requestedModel, effort, context) {
+    const session = this.sessionObjects.get(sessionId);
+    const record = this.sessions.get(sessionId);
+    // An effort-only change on a session opened with Copilot's default model needs the model Copilot chose.
+    const modelId = requestedModel || (await session.rpc?.model?.getCurrent?.())?.modelId;
+    check(modelId, 'copilot_model_unavailable', 'Copilot did not report the session model, so its reasoning effort cannot be changed.', 409);
+    const kept = effort ? null : record?.currentEffort;
+    await this.#assertModelChoice(modelId, effort || kept, effort ? 'requested' : 'current');
     try {
-      await session.setModel(modelId);
+      await session.setModel(modelId, effort ? { reasoningEffort: effort } : undefined);
+    } catch (error) {
+      // Copilot validates before switching, so a rejected switch leaves the session as it was.
+      throw sdkError('copilot_model_switch_rejected', `Copilot refused to switch the session model: ${error.message}`, 400, error);
+    }
+    try {
       const { config, selection } = this.#sessionConfig(context.cwd, modelId, context.settings, sessionId);
       session.registerHooks?.(config.hooks);
       const updated = await session.rpc?.options?.update?.({
@@ -650,8 +773,8 @@ export class CopilotRuntime extends Runtime {
         throw sdkError('copilot_tool_catalog_unavailable', 'Copilot could not update its exact tool allowlist after the model changed.', 503);
       }
       await this.#prepareSession(session, context.cwd, selection);
-      const record = this.sessions.get(sessionId);
-      if (record) record.currentModelId = modelId;
+      this.sessionContexts.set(sessionId, context);
+      if (record) Object.assign(record, { currentModelId: modelId, currentEffort: effort || kept || null });
     } catch (error) {
       try { await session.disconnect(); } catch {}
       this.sessionObjects.delete(sessionId);
@@ -699,21 +822,61 @@ export class CopilotRuntime extends Runtime {
     return { status: 'retiredLocally' };
   }
 
-  async resume(sessionId, cwd) {
+  async resume(sessionId, cwd, settings = {}) {
     await this.start();
-    const { config, selection } = this.#sessionConfig(cwd, this.model, {}, sessionId);
+    const { config, selection } = this.#sessionConfig(cwd, this.model, settings, sessionId);
     const session = await this.client.resumeSession(sessionId, config);
     await this.#prepareSession(session, cwd, selection);
-    this.sessionObjects.set(sessionId, session);
-    this.sessionContexts.set(sessionId, { cwd, settings: {} });
-    this.sessions.set(sessionId, { key: null, result: { sessionId } });
+    this.#track(sessionId, session);
+    this.sessionContexts.set(sessionId, { cwd, settings });
+    this.sessions.set(sessionId, { key: null, result: { sessionId }, ...modelState(this.model) });
     return sessionId;
+  }
+
+  /**
+   * Compacts a session's history now. `focus` steers what the summary keeps. A session not live in this
+   * process is resumed first, in `options.cwd` or else the working directory Copilot recorded for it.
+   * The SDK marks history.compact experimental.
+   */
+  async compact(sessionId, focus, options = {}) {
+    await this.start();
+    check(typeof sessionId === 'string' && sessionId, 'session_unavailable', 'compact() needs a session id.', 400);
+    check(focus === undefined || focus === null || typeof focus === 'string', 'invalid_focus', 'Compaction focus must be a string.', 400);
+    check(!this.turns.has(sessionId), 'turn_busy', 'The session has an active turn; compact it after the turn ends.', 409);
+    check(!this.compactions.has(sessionId), 'compaction_busy', 'The session is already being compacted.', 409);
+    const pending = { failure: null };
+    this.compactions.set(sessionId, pending);
+    try {
+      if (!this.sessionObjects.has(sessionId)) {
+        const cwd = options.cwd ?? (await this.client.listSessions())
+          .find(entry => entry.sessionId === sessionId)?.context?.workingDirectory;
+        check(cwd, 'session_unavailable', `Copilot session '${sessionId}' is unavailable.`, 404);
+        await this.resume(sessionId, cwd, options.settings);
+      }
+      const session = this.sessionObjects.get(sessionId);
+      let result;
+      try {
+        result = await session.rpc.history.compact({ trigger: 'manual', ...(focus ? { customInstructions: focus } : {}) });
+      } catch (error) {
+        // Copilot rejects the call after reporting a failed compaction (for example "Nothing to compact.").
+        if (pending.failure) return compactResult('copilot', sessionId, { success: false, error: pending.failure });
+        throw sdkError('copilot_compaction_failed', `Copilot could not compact the session: ${error.message}`, 502, error);
+      }
+      return compactResult('copilot', sessionId, {
+        success: result?.success !== false,
+        tokensRemoved: result?.tokensRemoved,
+        messagesRemoved: result?.messagesRemoved,
+        summary: result?.summaryContent,
+        error: result?.success === false ? pending.failure || 'Copilot compaction failed.' : null,
+      });
+    } finally {
+      this.compactions.delete(sessionId);
+    }
   }
 
   async setMode() { unsupported('copilot', 'setMode'); }
   async setPermissions() { unsupported('copilot', 'setPermissions'); }
   async setGoal() { unsupported('copilot', 'setGoal'); }
-  async compact() { unsupported('copilot', 'compact'); }
   async usage() { unsupported('copilot', 'usage'); }
   async steer() { unsupported('copilot', 'steer'); }
   async fork() { unsupported('copilot', 'fork'); }

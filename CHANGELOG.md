@@ -1,0 +1,69 @@
+# Changelog
+
+## Unreleased
+
+### Added
+
+- **Copilot account sign-in.** The account adapter can start the SDK login flow
+  without a packaged CLI, publish progress events, accept app-provided answers,
+  cancel flows, and optionally open the provider URL. The CLI device-code path
+  remains available as a compatibility mode and uses the configured Copilot
+  home.
+- **Account sign-in contract.** Added engine-neutral state/progress/action and
+  answer types. The Copilot login RPC is experimental in SDK 1.0.19; plaintext
+  consent is surfaced but cannot be answered until the SDK documents its wire
+  format.
+- **Existing Copilot logins.** `acceptedLogins` lets an app offer the GitHub
+  CLI login or an environment token alongside Floe's own sign-in.
+  Signed-out readiness lists them in `existingLogins`; `useExistingLogin()`
+  saves the person's choice (never the token) and `forgetExistingLogin()`
+  clears it. The account adapter and runtime both use the chosen login, with
+  no silent fallback. The default `['app']` keeps the old behaviour.
+  Because Copilot reports no account name for a token, Floe names it with
+  GitHub's `GET /user`.
+
+### Fixed
+
+- **External server connection.** With `RuntimeConnection.forUri`, Floe no
+  longer sets `useLoggedInUser`, which the SDK rejects for that connection.
+- **Inherited SDK auth token.** `COPILOT_SDK_AUTH_TOKEN` is now stripped from
+  Copilot child and SDK environments, like the other credential variables. An
+  app server that inherited it no longer reports `signed_out` after a
+  successful Floe sign-in.
+- **Copilot connection env.** When `clientOptions.connection` carries its own
+  `env` (for example `RuntimeConnection.forStdio({ env })`), Floe now sets the
+  filtered env only on the connection. Before, it also set the client-level
+  `env`, which the SDK rejects. The account adapter and runtime share one
+  options builder.
+
+## 0.2.0
+
+### Added
+
+- **Copilot reasoning effort.** `settings.effort` (`none`, `low`, `medium`,
+  `high`, `xhigh`, `max`) is sent to Copilot when a session is created or
+  resumed. Same setting name as the Codex adapter.
+- **`result.effort`** on Copilot runs: the effort Copilot reported using, else
+  the effort the session was set to, else `null`. `onStart` meta has `effort`.
+- **`setModel(id, modelId, { effort })`** on Copilot, Codex and `Fleet`. The
+  two-argument form is unchanged.
+- **Error codes:** `copilot_effort_unavailable` (400) and
+  `copilot_model_switch_rejected` (400).
+
+### Behaviour changes
+
+Apps using the Copilot adapter should check these.
+
+- **B1** A continued `run()` (same live `sessionId`) with a different explicit
+  `settings.model` or `settings.effort` now switches the session to it. Before,
+  the change was silently ignored. Omitting them keeps the session's current
+  model and effort.
+- **B2** When Copilot rejects a `setModel()` switch, the session now stays open
+  and unchanged, and the call fails with `copilot_model_switch_rejected`.
+  Before, any `setModel()` failure ended the session.
+- **B3** A run or switch asking for an effort the model does not support now
+  fails before the turn starts with `copilot_effort_unavailable`, listing the
+  supported levels. Without this check Copilot accepts the session and fails
+  the first message without an error code. `setModel()` without an effort is
+  also refused when the new model cannot keep the current effort; Copilot
+  would otherwise reset it silently.

@@ -6,6 +6,15 @@ function modelCatalog(model, filters) {
   return filters.filter(filter => !(filter.startsWith('builtin:') && absent.has(filter.slice(8))));
 }
 
+// Reasoning-effort levels per model, shaped like live listModels(). fixture-model declares nothing (like `auto`).
+const MODEL_EFFORTS = {
+  'gpt-5-mini': ['low', 'medium', 'high'],
+  'claude-sonnet-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'gpt-5.1-codex': ['low', 'medium', 'high', 'xhigh'],
+  'gpt-5.4': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'claude-haiku-4.5': [],
+};
+
 export class FakeCopilotSession {
   constructor(id, config, client) {
     this.sessionId = id;
@@ -40,7 +49,38 @@ export class FakeCopilotSession {
       gitHubAuth: {
         getStatus: async () => ({ ...client.authStatus }),
       },
+      model: {
+        getCurrent: async () => ({ modelId: this.config.model || 'gpt-5-mini' }),
+      },
+      // Mirrors live CLI 1.0.95: events carry the request's trigger, and a failed compaction is
+      // reported as a failed compaction_complete event before the call rejects.
+      history: {
+        compact: async (input = {}) => {
+          this.client.compactCalls.push(input);
+          const trigger = input.trigger;
+          this.emit('session.compaction_start', { trigger, currentTokens: 5000, tokenLimit: 272000 });
+          if (this.client.compactFailure) {
+            this.emit('session.compaction_complete', { success: false, error: this.client.compactFailure, trigger, customInstructions: input.customInstructions });
+            throw new Error(`Request session.history.compact failed with message: ${this.client.compactFailure}`);
+          }
+          const outcome = { tokensRemoved: 4000, messagesRemoved: 3, summaryContent: '<overview>Kept the decisions.</overview>' };
+          this.emit('session.compaction_complete', {
+            success: true, trigger, customInstructions: input.customInstructions,
+            preCompactionTokens: 5000, postCompactionTokens: 1000, ...outcome,
+          });
+          return { success: true, ...outcome, contextWindow: { tokenLimit: 272000, currentTokens: 1000, messagesLength: 1 } };
+        },
+      },
     };
+  }
+
+  /** An automatic compaction, as the SDK runs it in the background. */
+  backgroundCompaction() {
+    this.emit('session.compaction_start', { trigger: 'threshold', currentTokens: 70000, tokenLimit: 272000 });
+    this.emit('session.compaction_complete', {
+      success: true, trigger: 'threshold', preCompactionTokens: 70000, postCompactionTokens: 12000,
+      tokensRemoved: 58000, messagesRemoved: 1, summaryContent: '<overview>Background summary.</overview>',
+    });
   }
 
   on(handler) {
@@ -140,6 +180,12 @@ export class FakeCopilotSession {
           cacheWriteTokens: 7, numToolCalls: 0,
         });
       }
+      if (prompt.includes('[effort-usage]')) {
+        this.emit('assistant.usage', {
+          apiCallId: 'call-effort', model: this.config.model, inputTokens: 10, outputTokens: 2,
+          reasoningEffort: this.config.reasoningEffort || 'medium',
+        });
+      }
       if (prompt.includes('[tool]')) {
         this.emit('tool.execution_start', { toolCallId: 'tool-1', toolName: 'lookup', arguments: { id: '1' } });
         this.emit('tool.execution_complete', { toolCallId: 'tool-1', toolName: 'lookup', success: true, result: 'found' });
@@ -167,8 +213,18 @@ export class FakeCopilotSession {
     }, 0);
   }
 
-  async setModel(model) {
+  // Mirrors live Copilot (SDK 1.0.19): an unsupported level is refused and the session is left unchanged;
+  // with no effort, the current one carries over only if the new model supports it.
+  async setModel(model, options) {
+    this.client.setModelCalls.push([model, options]);
+    const levels = MODEL_EFFORTS[model] || [];
+    const requested = options?.reasoningEffort;
+    if (requested && !levels.includes(requested)) {
+      throw new Error(`Request session.model.switchTo failed with message: Reasoning effort '${requested}' is not supported for model '${model}'.`);
+    }
+    const kept = levels.includes(this.config.reasoningEffort) ? this.config.reasoningEffort : undefined;
     this.config.model = model;
+    this.config.reasoningEffort = requested || kept;
   }
 
   registerHooks(hooks) {
@@ -177,6 +233,8 @@ export class FakeCopilotSession {
 
   async disconnect() {
     this.client.sendOrder.push('disconnect');
+    // The real SDK clears every handler on disconnect.
+    this.handlers.clear();
   }
 }
 
@@ -195,6 +253,9 @@ export class FakeCopilotClient {
     this.abortWithoutIdle = false;
     this.pending = null;
     this.listModelsCalls = 0;
+    this.setModelCalls = [];
+    this.compactCalls = [];
+    this.compactFailure = null;
   }
 
   async start() {}
@@ -217,16 +278,25 @@ export class FakeCopilotClient {
 
   async listModels() {
     this.listModelsCalls += 1;
-    return [
-      { id: 'gpt-5-mini', name: 'GPT-5 mini' },
-      { id: 'fixture-model', name: 'Fixture model' },
-      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
-      { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' },
-      { id: 'gpt-5.4', name: 'GPT-5.4' },
-    ];
+    const names = {
+      'gpt-5-mini': 'GPT-5 mini', 'fixture-model': 'Fixture model', 'claude-sonnet-5': 'Claude Sonnet 5',
+      'gpt-5.1-codex': 'GPT-5.1 Codex', 'gpt-5.4': 'GPT-5.4', 'claude-haiku-4.5': 'Claude Haiku 4.5',
+    };
+    return Object.entries(names).map(([id, name]) => {
+      const levels = MODEL_EFFORTS[id];
+      if (levels === undefined) return { id, name };
+      return {
+        id, name,
+        capabilities: { supports: { reasoningEffort: levels.length > 0 } },
+        ...(levels.length ? { supportedReasoningEfforts: levels } : {}),
+      };
+    });
   }
 
   async listSessions() {
-    return [...this.sessions.keys()].map(sessionId => ({ sessionId }));
+    return [...this.sessions.values()].map(session => ({
+      sessionId: session.sessionId,
+      context: { workingDirectory: session.config.workingDirectory },
+    }));
   }
 }

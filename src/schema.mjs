@@ -5,10 +5,10 @@
 // mechanics: a small JSON-Schema-subset validator, and helpers to pull a
 // JSON object out of an agent's final free-text message and validate it.
 //
-// Backends differ in how strictly they can be made to emit exactly this
-// JSON: Codex supports a server-enforced `outputSchema` on turn/start, while
-// Copilot's SDK adapter relies on
-// promptInstructionFor() plus this same validation/extraction path.
+// Structured output is opt-in and caller-owned. Codex receives a per-run
+// `outputSchema` and Copilot a per-message `responseSchema` through their
+// native SDK interfaces; this module validates and extracts the resulting
+// text without changing ordinary prompts.
 //
 // LIVE EVIDENCE (against the real Copilot runtime, a Star-Map-shaped
 // prompt: do a small task, then report against a schema) - the model reliably
@@ -27,7 +27,7 @@ import { RuntimeFault } from './errors.mjs';
 
 /**
  * Validates `value` against a small JSON-Schema subset (object/array/string/
- * boolean/number/null, enum, anyOf, required, additionalProperties=false).
+ * boolean/number/integer/null, enum, anyOf, required, additionalProperties=false).
  * Throws a RuntimeFault('report_schema', ...) on the first violation.
  */
 export function validate(value, schema, location = 'report') {
@@ -39,7 +39,9 @@ export function validate(value, schema, location = 'report') {
   }
   const actual = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
   const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-  check(types.includes(actual), location, `must be ${types.join(' or ')}.`);
+  const matchesType = types.includes(actual)
+    || (actual === 'number' && Number.isInteger(value) && types.includes('integer'));
+  check(matchesType, location, `must be ${types.join(' or ')}.`);
   if (schema.enum) check(schema.enum.includes(value), location, 'has an unsupported value.');
   if (actual === 'string' && Number.isFinite(schema.maxLength)) check(value.length <= schema.maxLength, location, 'is too long.');
   if (actual === 'array') {
@@ -160,10 +162,11 @@ export function extractStructuredOutput(text, schema, { role = 'agent' } = {}) {
 }
 
 /**
- * Renders an instruction block asking the model to reply with JSON matching
- * `schema`. Backends without server-enforced structured output (e.g.
- * Copilot) should append this to their prompt; backends with native
- * enforcement (e.g. Codex's outputSchema) don't need it.
+ * Renders an optional, caller-controlled instruction asking the model to
+ * reply with JSON matching `schema`. Prefer native structured-output options
+ * such as Codex's `outputSchema` or Copilot's `responseSchema` when available;
+ * callers can use this helper explicitly as a fallback for other backends.
+ * The runtime does not add this instruction to prompts automatically.
  */
 export function promptInstructionFor(schema) {
   return `Respond with a single JSON object only (no prose, no markdown fences) matching this JSON Schema:\n${JSON.stringify(schema)}`;

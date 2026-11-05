@@ -98,6 +98,29 @@ test('public runtime construction with baseDirectory completes a fake SDK turn',
   }
 });
 
+test('Copilot sends an optional native response schema per message without changing prompt text', async () => {
+  const { client, runtime } = makeRuntime();
+  try {
+    const first = await runtime.run('worker', { prompt: 'Answer naturally.', schema: SCHEMA }, 'C:\\work');
+    assert.deepEqual(client.lastSendOptions, { prompt: 'Answer naturally.', responseSchema: SCHEMA });
+    assert.deepEqual(first.report, { ok: true, summary: 'done' });
+    assert.equal(first.text, '{"ok":true,"summary":"done"}');
+
+    const second = await runtime.run(
+      'worker',
+      { prompt: 'Continue in ordinary conversation.' },
+      'C:\\work',
+      () => {},
+      {},
+      { sessionId: first.sessionId },
+    );
+    assert.equal(second.sessionId, first.sessionId);
+    assert.deepEqual(client.lastSendOptions, { prompt: 'Continue in ordinary conversation.' });
+    assert.equal(second.report, second.text);
+    assert.equal(second.report, '{"ok":true,"summary":"done"}');
+  } finally { await runtime.close(); }
+});
+
 test('SDK runtime completes a turn only at session.idle and supports multiple model turns', async () => {
   const { runtime } = makeRuntime();
   try {
@@ -376,6 +399,7 @@ test('SDK runtime maps supported non-text blocks and rejects unsupported blocks 
     assert.deepEqual(client.lastSendOptions, {
       prompt: 'inspect this image',
       attachments: [{ type: 'blob', data: 'aGVsbG8=', mimeType: 'image/png', displayName: 'diagram.png' }],
+      responseSchema: SCHEMA,
     });
     await assert.rejects(
       runtime.run('worker', { blocks: [{ type: 'embedded_context', value: 'lost' }], schema: SCHEMA }, 'C:\\work'),

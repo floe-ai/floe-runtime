@@ -1,0 +1,96 @@
+[
+  {
+    "id": "floe-runtime@0.1.0",
+    "name": "floe-runtime",
+    "version": "0.1.0",
+    "size": 52382,
+    "unpackedSize": 173994,
+    "shasum": "b9b11c314924778abf7b9f68c45bfdb6da3cc218",
+    "integrity": "sha512-I/PxgNYWOIWmlt0ZurRc7I06XMqInhGWFpU+NtqS+JrJHS7L0uCUL1moFY2Zq1FZieDPqFWx1V8zFcwrFBfRYQ==",
+    "filename": "floe-runtime-0.1.0.tgz",
+    "files": [
+      {
+        "path": "README.md",
+        "size": 29062,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 889,
+        "mode": 420
+      },
+      {
+        "path": "src/activity.mjs",
+        "size": 2320,
+        "mode": 420
+      },
+      {
+        "path": "src/adapters/codex.mjs",
+        "size": 44023,
+        "mode": 420
+      },
+      {
+        "path": "src/adapters/copilot.d.mts",
+        "size": 6836,
+        "mode": 420
+      },
+      {
+        "path": "src/adapters/copilot.mjs",
+        "size": 20835,
+        "mode": 420
+      },
+      {
+        "path": "src/capabilities.mjs",
+        "size": 1377,
+        "mode": 420
+      },
+      {
+        "path": "src/errors.mjs",
+        "size": 1571,
+        "mode": 420
+      },
+      {
+        "path": "src/events.mjs",
+        "size": 4756,
+        "mode": 420
+      },
+      {
+        "path": "src/fleet.mjs",
+        "size": 26206,
+        "mode": 420
+      },
+      {
+        "path": "src/index.mjs",
+        "size": 857,
+        "mode": 420
+      },
+      {
+        "path": "src/jsonrpc.mjs",
+        "size": 9233,
+        "mode": 420
+      },
+      {
+        "path": "src/permissions.mjs",
+        "size": 1225,
+        "mode": 420
+      },
+      {
+        "path": "src/runtime.mjs",
+        "size": 13844,
+        "mode": 420
+      },
+      {
+        "path": "src/schema.mjs",
+        "size": 8370,
+        "mode": 420
+      },
+      {
+        "path": "src/session-reuse.mjs",
+        "size": 2590,
+        "mode": 420
+      }
+    ],
+    "entryCount": 16,
+    "bundled": []
+  }
+]

@@ -124,11 +124,20 @@ same unhandled-request timeout.
 
 floe-runtime ships only the validation *mechanism* (`validate`,
 `extractStructuredOutput`, `promptInstructionFor` in `src/schema.mjs`). Each
-consuming app defines its own per-role JSON Schemas and prompt templates and
-passes the finished `{ prompt, schema }` into `run()`. Codex can enforce
-`schema` server-side (`outputSchema` on `turn/start`). Copilot SDK prompts
-should request JSON matching the schema (see `promptInstructionFor(schema)`),
-then use the shared client-side validation path.
+consuming app owns its per-role JSON Schemas and opts into structured output
+by passing `{ prompt, schema }` to `run()`. Without a schema, the model can
+reply in ordinary conversational text. The runtime never adds schema
+instructions to a prompt automatically.
+
+With a schema, Codex passes it as `outputSchema` on `turn/start`; Copilot
+passes it as the per-message `responseSchema` option to `session.send`. The
+Copilot SDK 1.0.19 feature is marked preview and requires a compatible runtime
+build/provider with `responseFormat` support, so enforcement is not guaranteed
+for every provider. Both adapters retain Floe's client-side validation and
+extraction path. `promptInstructionFor(schema)` remains available for callers
+that explicitly want a prompt-based fallback; it is not used automatically by
+the Copilot adapter. Final-response schemas are separate from tools/actions,
+which remain native SDK tool calls.
 
 ## Adapters
 

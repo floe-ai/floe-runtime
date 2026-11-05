@@ -90,6 +90,19 @@ test('validate() rejects additionalProperties when the schema forbids them', () 
   assert.throws(() => validate({ status: 'ok', extra: 1 }, schema), error => error.code === 'report_schema');
 });
 
+test('validate() accepts integer values and rejects fractional values', () => {
+  const integerSchema = { type: 'integer' };
+  assert.equal(validate(42, integerSchema), 42);
+  assert.throws(() => validate(42.5, integerSchema), error => error.code === 'report_schema');
+});
+
+test('validate() supports integer alternatives in type arrays', () => {
+  const unionSchema = { type: ['integer', 'string'] };
+  assert.equal(validate(42, unionSchema), 42);
+  assert.equal(validate('42', unionSchema), '42');
+  assert.throws(() => validate(42.5, unionSchema), error => error.code === 'report_schema');
+});
+
 test('promptInstructionFor() renders a non-empty instruction mentioning the schema', () => {
   const instruction = promptInstructionFor(schema);
   assert.ok(instruction.length > 0);

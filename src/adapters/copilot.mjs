@@ -672,7 +672,10 @@ export class CopilotRuntime extends Runtime {
     check(!this.compactions.has(continuation.sessionId), 'compaction_busy', 'The session is being compacted.', 409);
     // A live continuation is checked against the session's own model inside #switchModel.
     if (!(continuation.sessionId && this.sessionObjects.has(continuation.sessionId))) await this.#assertModelChoice(model, settings.effort);
-    const sendOptions = promptOptions(input);
+    const sendOptions = {
+      ...promptOptions(input),
+      ...(input.schema ? { responseSchema: input.schema } : {}),
+    };
     const key = sessionKey({ role, cwd, model, settings, permissions: null, scope: continuation.scope });
     const destination = await this.#getSession(cwd, model, settings, continuation);
     const { session, sessionId, reused, reason } = destination;

@@ -38,6 +38,21 @@ export interface AccountState {
 
 export interface EngineAccountState extends AccountState {
   engine: 'copilot';
+  /** Which login readiness used; present when signed in. */
+  loginSource?: AccountLoginSource;
+  /** Accepted existing logins found while signed out. Never includes tokens. */
+  existingLogins?: ExistingLogin[];
+  /** Why existing logins can't be offered (for example, an external Copilot server connection). */
+  existingLoginsUnavailable?: string;
+}
+
+/** 'app': Floe's own sign-in. 'github-cli': the gh CLI login. 'environment': COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN. */
+export type AccountLoginSource = 'app' | 'github-cli' | 'environment';
+
+export interface ExistingLogin {
+  source: Exclude<AccountLoginSource, 'app'>;
+  login: string;
+  host?: string;
 }
 
 export type AccountSignInProvider = 'github' | 'github-enterprise-cloud' | 'microsoft-entra';
@@ -103,10 +118,14 @@ export interface AccountSignInAdapter {
 export interface CopilotEngineAccountAdapterOptions {
   clientFactory?: (options: Record<string, unknown>) => unknown | Promise<unknown>;
   clientOptions: Record<string, unknown> & { baseDirectory: string };
+  /** Logins the person may choose. Defaults to ['app']. */
+  acceptedLogins?: AccountLoginSource[];
   cliPath?: string;
   environment?: Record<string, string | undefined>;
   spawnProcess?: (...args: any[]) => any;
   openUrl?: (url: string) => void | Promise<void>;
+  /** Used for GitHub's `GET /user` to name an existing login. Defaults to global fetch. */
+  fetch?: typeof fetch;
   now?: () => string;
   operationId?: () => string;
 }
@@ -127,6 +146,10 @@ export class CopilotEngineAccountAdapter extends EventEmitter {
   }): Promise<{ id: string }>;
   continueSignIn(id: string, answer: SignInAnswer): Promise<void>;
   cancelSignIn(id: string): Promise<void>;
+  /** Saves the person's choice of an accepted existing login (never its token) and rechecks readiness. */
+  useExistingLogin(source: ExistingLogin['source']): Promise<EngineAccountState>;
+  /** Clears a saved existing-login choice so Floe's own sign-in is used again, and rechecks readiness. */
+  forgetExistingLogin(): Promise<EngineAccountState>;
   close(): Promise<void>;
   on(event: 'state', listener: (state: EngineAccountState) => void): this;
   on(event: 'sign_in', listener: (progress: SignInProgress) => void): this;

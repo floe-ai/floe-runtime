@@ -21,7 +21,8 @@ import {
   prepareCopilotToolSession,
   resolveCopilotToolSelection,
 } from './copilot-tools.mjs';
-import { copilotConnectionForHome, copilotEnvironmentForHome } from './copilot-account.mjs';
+import { copilotSdkClientOptions } from './copilot-account.mjs';
+import { CHOSEN_LOGIN_AUTH_TYPES, loginSourceLabel, resolveSavedLogin, tokenIdentity } from './copilot-login-sources.mjs';
 import { copilotSystemMessage, floeBaseSystemMessage, mergeSystemMessageLayers } from '../system-message.mjs';
 export { defineTool } from '@github/copilot-sdk';
 export { CopilotEngineAccountAdapter, copilotChildEnvironment } from './copilot-account.mjs';
@@ -42,6 +43,7 @@ const DEFAULT_QUIESCE_TIMEOUT_MS = 10000;
 const DEFAULT_PROGRESS_TIMEOUT_MS = 120000;
 const PROCESS_EXECUTION_TOOLS = new Set(['bash', 'powershell']);
 const TOKEN_USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'];
+const APP_LOGIN_AUTH_TYPES = new Set(['user']);
 
 function sdkError(code, message, status = 502, cause) {
   const error = new RuntimeFault(code, message, status);
@@ -73,17 +75,6 @@ function normalizedHost(host) {
 /** The model and reasoning effort a session was opened or last switched with (null = Copilot default). */
 function modelState(model, settings = {}) {
   return { currentModelId: model || null, currentEffort: settings.effort || null };
-}
-
-function isolatedClientOptions(clientOptions) {
-  const { gitHubToken: _ignoredToken, connection, env: optionEnvironment, ...options } = clientOptions;
-  return {
-    ...options,
-    ...(connection ? { connection: copilotConnectionForHome(connection, clientOptions.baseDirectory) } : {}),
-    mode: 'copilot-cli',
-    useLoggedInUser: true,
-    env: copilotEnvironmentForHome({ ...process.env, ...optionEnvironment }, clientOptions.baseDirectory),
-  };
 }
 
 function layeredSystemMessage(applicationLayer, actorLayer) {
@@ -133,6 +124,9 @@ function promptOptions(input) {
 }
 
 export class CopilotRuntime extends Runtime {
+  #chosenToken;
+  #chosenLogin;
+
   constructor({
     model,
     timeoutMs = 45 * 60 * 1000,
@@ -178,7 +172,8 @@ export class CopilotRuntime extends Runtime {
     this.progressTimeoutMs = progressTimeoutMs;
     this.client = client;
     this.clientFactory = clientFactory || (options => new CopilotClient(options));
-    this.clientOptions = isolatedClientOptions(clientOptions);
+    this.clientOptions = clientOptions;
+    this.loginSource = 'app';
     this.systemMessage = systemMessage;
     layeredSystemMessage(systemMessage); // rejects a malformed application layer at construction
     this.tools = tools.map(normalizeTool);
@@ -210,17 +205,41 @@ export class CopilotRuntime extends Runtime {
     if (this.starting) return this.starting;
     this.starting = (async () => {
       try {
-        if (!this.client) this.client = await this.clientFactory(this.clientOptions);
+        if (!this.client) this.client = await this.clientFactory(await this.#sdkOptions());
         await this.client.start();
         this.ready = true;
         this.info = { backend: 'copilot-sdk', sdkVersion: '1.0.19' };
         this.emit('ready', this.info);
         return this.info;
       } catch (error) {
+        if (error?.code === 'copilot_login_unavailable') throw error;
         throw sdkError('copilot_unavailable', `Copilot SDK could not start: ${error.message}`, 503, error);
       }
     })();
     try { return await this.starting; } finally { this.starting = null; }
+  }
+
+  /** Each new client gets a freshly resolved token when the person chose an existing login; there is no fallback. */
+  async #sdkOptions() {
+    const login = await resolveSavedLogin({ clientOptions: this.clientOptions });
+    if (login.source !== 'app' && !login.gitHubToken) {
+      throw sdkError(
+        'copilot_login_unavailable',
+        login.unavailable ?? `Floe is set to use your ${loginSourceLabel(login.source)}, but it isn't available now. Check Copilot readiness.`,
+        401,
+      );
+    }
+    this.loginSource = login.source;
+    this.#chosenToken = login.gitHubToken;
+    this.#chosenLogin = undefined;
+    return copilotSdkClientOptions(this.clientOptions, process.env, login.gitHubToken);
+  }
+
+  /** The session's login; for a chosen token the SDK may omit it, so GitHub confirms the token owner. */
+  async #sessionLogin(auth) {
+    if (this.loginSource === 'app' || (typeof auth.login === 'string' && auth.login)) return auth.login;
+    this.#chosenLogin ??= (await tokenIdentity(auth, this.#chosenToken))?.login;
+    return this.#chosenLogin;
   }
 
   async models() {
@@ -399,11 +418,14 @@ export class CopilotRuntime extends Runtime {
     if (!auth?.isAuthenticated) {
       throw sdkError('copilot_account_mismatch', `Copilot session is not authenticated as the readiness account '${this.expectedAccount.label}'.`, 409);
     }
-    if (auth.authType !== 'user') {
-      throw sdkError('copilot_account_mismatch', `Copilot session selected '${auth.authType || 'unknown'}' authentication instead of the readiness OAuth account '${this.expectedAccount.label}'.`, 409);
+    const acceptedAuthTypes = this.loginSource === 'app' ? APP_LOGIN_AUTH_TYPES : CHOSEN_LOGIN_AUTH_TYPES;
+    if (!acceptedAuthTypes.has(auth.authType)) {
+      const expected = this.loginSource === 'app' ? 'readiness OAuth account' : `readiness ${loginSourceLabel(this.loginSource)}`;
+      throw sdkError('copilot_account_mismatch', `Copilot session selected '${auth.authType || 'unknown'}' authentication instead of the ${expected} '${this.expectedAccount.label}'.`, 409);
     }
-    if (typeof auth.login !== 'string' || auth.login.toLowerCase() !== this.expectedAccount.label.toLowerCase()) {
-      throw sdkError('copilot_account_mismatch', `Copilot session authenticated as '${auth.login || 'unknown'}' instead of readiness account '${this.expectedAccount.label}'.`, 409);
+    const login = await this.#sessionLogin(auth);
+    if (typeof login !== 'string' || login.toLowerCase() !== this.expectedAccount.label.toLowerCase()) {
+      throw sdkError('copilot_account_mismatch', `Copilot session authenticated as '${login || 'unknown'}' instead of readiness account '${this.expectedAccount.label}'.`, 409);
     }
     if (this.expectedAccount.host && normalizedHost(auth.host) !== normalizedHost(this.expectedAccount.host)) {
       throw sdkError('copilot_account_mismatch', `Copilot session authenticated against '${auth.host || 'unknown'}' instead of readiness host '${this.expectedAccount.host}'.`, 409);

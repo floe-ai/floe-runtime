@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { CopilotClient, RuntimeConnection } from '@github/copilot-sdk';
 import {
   COPILOT_TOOL_MANIFEST_VERSION,
   CopilotRuntime,
@@ -69,7 +70,10 @@ test('public runtime construction with baseDirectory completes a fake SDK turn',
     clientOptions: {
       baseDirectory: 'C:\\floe-owned\\copilot-session',
       env: { COPILOT_HOME: 'C:\\different-home' },
-      connection: { env: { COPILOT_HOME: 'C:\\different-connection-home' } },
+      connection: RuntimeConnection.forStdio({
+        path: 'C:\\copilot.exe',
+        env: { COPILOT_HOME: 'C:\\different-connection-home', COPILOT_SDK_AUTH_TOKEN: 'sdk-secret' },
+      }),
     },
     expectedAccount: { label: 'octocat', host: 'https://github.com/' },
     clientFactory: options => {
@@ -83,8 +87,10 @@ test('public runtime construction with baseDirectory completes a fake SDK turn',
     const result = await runtime.run('worker', { prompt: 'hello', schema: SCHEMA }, 'C:\\work');
     assert.deepEqual(result.report, { ok: true, summary: 'done' });
     assert.equal(client.options.baseDirectory, 'C:\\floe-owned\\copilot-session');
-    assert.equal(client.options.env.COPILOT_HOME, 'C:\\floe-owned\\copilot-session');
+    assert.equal(client.options.env, undefined);
     assert.equal(client.options.connection.env.COPILOT_HOME, 'C:\\floe-owned\\copilot-session');
+    assert.equal(client.options.connection.env.COPILOT_SDK_AUTH_TOKEN, undefined);
+    assert.doesNotThrow(() => new CopilotClient(client.options));
     assert.equal(client.options.mode, 'copilot-cli');
     assert.equal(client.options.useLoggedInUser, true);
   } finally {

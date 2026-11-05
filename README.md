@@ -355,6 +355,52 @@ path is not a remote device-code API. SDK and CLI children never receive
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or
 `COPILOT_DISABLE_KEYTAR` from the parent process.
 
+### Existing logins
+
+By default (`acceptedLogins: ['app']`) only Floe's own sign-in counts. An app
+can also offer a login the person already has:
+
+- `'github-cli'`: the GitHub CLI login (Floe runs `gh auth token`).
+- `'environment'`: the first of `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or
+  `GITHUB_TOKEN` in the adapter's environment.
+
+While signed out, `state.existingLogins` lists each accepted login that
+Copilot recognises, as `{ source, login, host }`. Copilot doesn't report the
+account name for a token, so Floe asks GitHub's `GET /user` endpoint; a token
+GitHub doesn't confirm is not offered. When any are listed, `state.message`
+offers them, for example "Copilot isn't signed in for Floe. You can use your
+GitHub CLI login (octocat), or sign in." Nothing is used until the person picks
+one:
+
+```js
+const accounts = new CopilotEngineAccountAdapter({
+  clientOptions: { baseDirectory: copilotHome },
+  acceptedLogins: ['app', 'github-cli', 'environment'],
+});
+accounts.on('state', state => {
+  if (state.authentication !== 'signed_out') return showAccount(state.account, state.loginSource);
+  showButtons([
+    ...(state.existingLogins ?? []).map(login => ({
+      label: `Use ${login.login} (${login.source})`,
+      onClick: () => accounts.useExistingLogin(login.source),
+    })),
+    { label: 'Sign in', onClick: () => accounts.signIn() },
+  ]);
+});
+await accounts.check();
+// Later: await accounts.forgetExistingLogin();
+```
+
+`useExistingLogin(source)` saves only the choice (`{ "source": ... }` in
+`floe-login.json` inside `clientOptions.baseDirectory`), never the token. Every
+SDK client the account adapter and `CopilotRuntime` create then gets a freshly
+resolved token from that source, and readiness reports `loginSource`. If the
+chosen source has no token later, readiness reports `signed_out` and does not
+fall back to another login. `forgetExistingLogin()` clears the choice;
+completing `signIn()` also clears it. Existing logins aren't available with
+`RuntimeConnection.forUri`, because the SDK leaves auth to the external server;
+`state.existingLoginsUnavailable` explains why.
+
 ## Parity surface
 
 Both adapters implement the same additional methods beyond the core `run`/
